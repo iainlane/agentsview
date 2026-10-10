@@ -2452,5 +2452,9 @@
   "usage_click_project": "クリックして {label} に絞り込み、ダブルクリックでグループとセッションを開く",
   "usage_click_project_hint": "プロジェクトを選択するとページを絞り込み、開くとグループとセッションを表示します。",
   "usage_click_to_focus": "クリックして {label} に絞り込む",
-  "usage_click_to_focus_hint": "クリックして絞り込み、再クリックで解除"
+  "usage_click_to_focus_hint": "クリックして絞り込み、再クリックで解除",
+  "usage_all_projects": "すべてのプロジェクト",
+  "usage_clear_selection": "選択をクリア",
+  "usage_open_project": "開く",
+  "usage_loading": "読み込み中..."
 }

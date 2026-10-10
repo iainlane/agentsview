@@ -2466,5 +2466,9 @@
   "usage_click_project": "{label} üzrə fokuslanmaq üçün klikləyin, qrupları və sessiyaları açmaq üçün iki dəfə klikləyin",
   "usage_click_project_hint": "Səhifəni süzmək üçün layihə seçin və ya qruplarını və sessiyalarını görmək üçün onu açın.",
   "usage_click_to_focus": "{label} üzrə fokuslanmaq üçün klikləyin",
-  "usage_click_to_focus_hint": "Fokuslanmaq üçün klikləyin, təmizləmək üçün yenidən klikləyin"
+  "usage_click_to_focus_hint": "Fokuslanmaq üçün klikləyin, təmizləmək üçün yenidən klikləyin",
+  "usage_all_projects": "Bütün layihələr",
+  "usage_clear_selection": "Seçimi təmizlə",
+  "usage_open_project": "Aç",
+  "usage_loading": "Yüklənir..."
 }

@@ -2381,5 +2381,9 @@
   "usage_click_project": "클릭하여 {label}에 집중, 두 번 클릭하여 그룹과 세션 열기",
   "usage_click_project_hint": "프로젝트를 선택하면 페이지가 필터링되고, 열면 그룹과 세션이 표시됩니다.",
   "usage_click_to_focus": "클릭하여 {label}에 집중",
-  "usage_click_to_focus_hint": "클릭하여 집중, 다시 클릭하여 해제"
+  "usage_click_to_focus_hint": "클릭하여 집중, 다시 클릭하여 해제",
+  "usage_all_projects": "모든 프로젝트",
+  "usage_clear_selection": "선택 해제",
+  "usage_open_project": "열기",
+  "usage_loading": "불러오는 중..."
 }

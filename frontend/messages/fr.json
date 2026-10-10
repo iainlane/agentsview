@@ -2463,5 +2463,9 @@
   "usage_click_project": "Cliquer pour cibler {label}, double-cliquer pour ouvrir ses groupes et sessions",
   "usage_click_project_hint": "Sélectionnez un projet pour filtrer la page, ou ouvrez-le pour voir ses groupes et sessions.",
   "usage_click_to_focus": "Cliquer pour cibler {label}",
-  "usage_click_to_focus_hint": "Cliquer pour cibler, recliquer pour effacer"
+  "usage_click_to_focus_hint": "Cliquer pour cibler, recliquer pour effacer",
+  "usage_all_projects": "Tous les projets",
+  "usage_clear_selection": "Effacer la sélection",
+  "usage_open_project": "Ouvrir",
+  "usage_loading": "Chargement..."
 }

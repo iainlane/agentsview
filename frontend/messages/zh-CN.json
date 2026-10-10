@@ -2381,5 +2381,9 @@
   "usage_click_project": "点击聚焦 {label}，双击打开其分组和会话",
   "usage_click_project_hint": "选择项目以筛选页面，打开项目可查看其分组和会话。",
   "usage_click_to_focus": "点击聚焦 {label}",
-  "usage_click_to_focus_hint": "点击聚焦，再次点击清除"
+  "usage_click_to_focus_hint": "点击聚焦，再次点击清除",
+  "usage_all_projects": "所有项目",
+  "usage_clear_selection": "清除选择",
+  "usage_open_project": "打开",
+  "usage_loading": "正在加载..."
 }

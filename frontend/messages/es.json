@@ -2466,5 +2466,9 @@
   "usage_click_project": "Haz clic para enfocar {label}; haz doble clic para abrir sus grupos y sesiones",
   "usage_click_project_hint": "Selecciona un proyecto para filtrar la página o ábrelo para ver sus grupos y sesiones.",
   "usage_click_to_focus": "Haz clic para enfocar {label}",
-  "usage_click_to_focus_hint": "Haz clic para enfocar; vuelve a hacer clic para borrar"
+  "usage_click_to_focus_hint": "Haz clic para enfocar; vuelve a hacer clic para borrar",
+  "usage_all_projects": "Todos los proyectos",
+  "usage_clear_selection": "Borrar selección",
+  "usage_open_project": "Abrir",
+  "usage_loading": "Cargando..."
 }

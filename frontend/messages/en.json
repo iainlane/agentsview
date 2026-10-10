@@ -2464,5 +2464,9 @@
   "usage_click_project": "Click to focus {label}; double-click to open its groups and sessions",
   "usage_click_project_hint": "Select a project to filter the page, or open it to see its groups and sessions.",
   "usage_click_to_focus": "Click to focus {label}",
-  "usage_click_to_focus_hint": "Click to focus; click again to clear"
+  "usage_click_to_focus_hint": "Click to focus; click again to clear",
+  "usage_all_projects": "All projects",
+  "usage_clear_selection": "Clear selection",
+  "usage_open_project": "Open",
+  "usage_loading": "Loading..."
 }
