@@ -20996,7 +20996,7 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 // change event. The caller must hold syncMu.
 func (e *Engine) processAndWriteSessionFile(
 	ctx context.Context, file parser.DiscoveredFile, requestedSessionID string,
-	publishedID ...*string,
+	publishedID *string,
 ) (preserved bool, sessionsChanged bool, err error) {
 	defer func() {
 		if ctx.Err() == nil {
@@ -21358,7 +21358,7 @@ func (e *Engine) processAndWriteSessionFile(
 		e.recordProviderStatHash(ctx, *res.providerStatHash)
 	}
 
-	if len(publishedID) > 0 && publishedID[0] != nil {
+	if publishedID != nil {
 		var roots []string
 		for i, pr := range res.results {
 			parent := pr.Session.ParentSessionID
@@ -21380,7 +21380,7 @@ func (e *Engine) processAndWriteSessionFile(
 		if len(roots) != 1 {
 			return preserved, sessionsChanged, fmt.Errorf("source %q produced %d eligible sessions: %v", file.Path, len(roots), roots)
 		}
-		*publishedID[0] = roots[0]
+		*publishedID = roots[0]
 	}
 	return preserved, sessionsChanged, nil
 }
