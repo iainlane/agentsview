@@ -21271,6 +21271,7 @@ type ServiceSessionDetail = service.SessionDetail
 type ServiceSessionList = service.SessionList
 
 type ServiceSyncInput struct {
+	// Foreground Reject writer contention or a required archive rebuild without waiting or rebuilding
 	Foreground *bool   `json:"foreground,omitempty"`
 	ID         *string `json:"id,omitempty"`
 	Path       *string `json:"path,omitempty"`
