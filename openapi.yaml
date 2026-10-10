@@ -6592,6 +6592,8 @@ components:
     ServiceSyncInput:
       additionalProperties: false
       properties:
+        foreground:
+          type: boolean
         id:
           type: string
         path:

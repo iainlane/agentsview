@@ -21271,9 +21271,10 @@ type ServiceSessionDetail = service.SessionDetail
 type ServiceSessionList = service.SessionList
 
 type ServiceSyncInput struct {
-	ID        *string `json:"id,omitempty"`
-	Path      *string `json:"path,omitempty"`
-	Subagents *bool   `json:"subagents,omitempty"`
+	Foreground *bool   `json:"foreground,omitempty"`
+	ID         *string `json:"id,omitempty"`
+	Path       *string `json:"path,omitempty"`
+	Subagents  *bool   `json:"subagents,omitempty"`
 }
 
 type ServiceToolCall struct {

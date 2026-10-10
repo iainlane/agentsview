@@ -1064,6 +1064,8 @@ reparsing before readiness and retries failures in the background.
 `session usage` and `token-use` refresh only the named session and its subagents,
 without requesting full startup ingestion. `--own-only` refreshes just the
 named session. A newly started daemon still runs deferred background ingestion.
+Local lookups can import a session from its source. `--server` resolves IDs only
+from the remote archive.
 `usage statusline` completes pending startup ingestion before querying, including
 when a previous daily report started the daemon. Later statusline queries rely
 on the daemon's file watcher for source changes.
