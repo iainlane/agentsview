@@ -1058,19 +1058,19 @@ time.
 
 `usage daily` reads committed archive data. When it starts a daemon, routine
 source ingestion runs after readiness. Run `agentsview sync` before the report
-when it must include new source changes. Required archive reparsing still
-finishes before the daemon serves requests.
+when it must include new source changes. The daemon attempts required archive
+reparsing before readiness and retries failures in the background.
 
 `session usage` and `token-use` refresh only the named session and its subagents,
-without waiting for full startup ingestion. `--own-only` refreshes just the
+without requesting full startup ingestion. `--own-only` refreshes just the
 named session. A newly started daemon still runs deferred background ingestion.
 `usage statusline` completes pending startup ingestion before querying, including
 when a previous daily report started the daemon. Later statusline queries rely
 on the daemon's file watcher for source changes.
 
-While a worker-backed daemon retries a required archive rebuild, session usage
-warns that refresh failed and returns the session's stored usage. Sessions that
-haven't been archived yet remain unavailable until the rebuild succeeds.
+While another sync owns the writer or the archive needs a rebuild, session usage
+returns stored usage with a refresh warning. An unarchived session reports the
+refresh error. Run `agentsview resync` when a rebuild is required.
 
 `--no-sync` skips source refresh and starts any new daemon without automatic
 sync. It does not disable sync on an already-running daemon. `--offline` reads

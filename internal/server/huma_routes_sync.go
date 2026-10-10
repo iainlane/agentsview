@@ -341,6 +341,10 @@ func (s *Server) rejectStaleArchiveForSync() error {
 	if s.localSyncRunner == nil {
 		return nil
 	}
+	return s.rejectStaleArchiveForSessionSync()
+}
+
+func (s *Server) rejectStaleArchiveForSessionSync() error {
 	local, ok := s.db.(*db.DB)
 	if !ok || !local.NeedsResync() {
 		return nil
@@ -1062,18 +1066,10 @@ func (s *Server) humaSyncSession(
 	if in.Body.Subagents && in.Body.ID == "" {
 		return nil, apiError(http.StatusBadRequest, "'subagents' requires 'id'")
 	}
-	if err := s.rejectStaleArchiveForSync(); err != nil {
+	if err := s.rejectStaleArchiveForSessionSync(); err != nil {
 		return nil, err
 	}
-	if err := s.resyncBeforeSessionSync(ctx); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, nil
-		}
-		if handled := handleHumaContextError(err); handled != nil {
-			return nil, handled
-		}
-		return nil, apiError(http.StatusInternalServerError, err.Error())
-	}
+
 	detail, err := s.sessionSyncService(ctx).Sync(ctx, in.Body)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1081,6 +1077,9 @@ func (s *Server) humaSyncSession(
 		}
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
+		}
+		if errors.Is(err, syncpkg.ErrSyncInProgress) {
+			return nil, apiError(http.StatusConflict, "session refresh unavailable while another sync is running")
 		}
 		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
@@ -1092,19 +1091,4 @@ func (s *Server) humaSyncSession(
 		return nil, apiError(http.StatusInternalServerError, err.Error())
 	}
 	return &jsonOutput[*service.SessionDetail]{Body: detail}, nil
-}
-
-func (s *Server) resyncBeforeSessionSync(ctx context.Context) error {
-	local, ok := s.db.(*db.DB)
-	if !ok || !local.NeedsResync() {
-		return nil
-	}
-	engine, err := s.syncEngineForRequest(ctx)
-	if err != nil {
-		return err
-	}
-	if _, err := s.runResyncWithFallback(ctx, engine, nil); err != nil {
-		return err
-	}
-	return ctx.Err()
 }
