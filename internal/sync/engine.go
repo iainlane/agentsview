@@ -1945,15 +1945,29 @@ func (e *Engine) ReparsePathsContext(ctx context.Context, paths []string) error 
 	return e.syncPathsContext(ctx, paths, true, false)
 }
 
-func (e *Engine) lockTargetedSync(foreground bool) error {
-	if foreground {
-		if !e.syncMu.TryLock() {
+func (e *Engine) lockTargetedSync(ctx context.Context, foreground bool) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if e.syncMu.TryLock() {
+			if err := ctx.Err(); err != nil {
+				e.syncMu.Unlock()
+				return err
+			}
+			return nil
+		}
+		if foreground {
 			return ErrSyncInProgress
 		}
-	} else {
-		e.syncMu.Lock()
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
-	return nil
 }
 
 func (e *Engine) syncPathsContext(ctx context.Context, paths []string, force, foreground bool) error {
@@ -1965,7 +1979,7 @@ func (e *Engine) syncPathsContext(ctx context.Context, paths []string, force, fo
 	}
 	ctx = e.parsePolicyContext(ctx)
 	stats, tombstoned, err := func() (SyncStats, int, error) {
-		if err := e.lockTargetedSync(foreground); err != nil {
+		if err := e.lockTargetedSync(ctx, foreground); err != nil {
 			return SyncStats{}, 0, err
 		}
 		defer e.syncMu.Unlock()
@@ -20091,9 +20105,9 @@ func (e *Engine) ImportSessionContext(ctx context.Context, requestedID string, s
 		return "", "", err
 	}
 	if subagents {
-		err = e.syncSessionWithSubagentsContext(ctx, id, false, file)
+		err = e.syncSessionWithSubagentsContext(ctx, id, false, &file, &id)
 	} else {
-		err = e.syncSingleSessionContext(ctx, id, false, file)
+		err = e.syncSingleSessionContext(ctx, id, false, &file, &id)
 	}
 	return id, file.Path, err
 }
@@ -20110,8 +20124,12 @@ func (e *Engine) findSessionSource(ctx context.Context, requestedID string) (str
 		}
 		id := def.IDPrefix + strings.TrimPrefix(rawID, def.IDPrefix)
 		if host == "" {
-			if sourcePath := e.FindSourceFile(ctx, id); sourcePath != "" && !isS3SourcePath(sourcePath) {
-				return id, parser.DiscoveredFile{Path: sourcePath, Agent: def.Type}, nil
+			file, err := e.findProviderSourceFileContext(ctx, def, id, strings.TrimPrefix(rawID, def.IDPrefix), "")
+			if err != nil {
+				return "", parser.DiscoveredFile{}, err
+			}
+			if file.Path != "" && !isS3SourcePath(file.Path) {
+				return id, file, nil
 			}
 		}
 		p, ok := s3ProviderFor(def.Type)
@@ -20240,14 +20258,22 @@ func (e *Engine) findProviderSourceFile(
 	rawSessionID string,
 	storedPath string,
 ) string {
+	file, err := e.findProviderSourceFileContext(ctx, def, sessionID, rawSessionID, storedPath)
+	if err != nil {
+		log.Printf("%s provider source lookup: %v", def.Type, err)
+	}
+	return file.Path
+}
+
+func (e *Engine) findProviderSourceFileContext(ctx context.Context, def parser.AgentDef, sessionID, rawSessionID, storedPath string) (parser.DiscoveredFile, error) {
 	ctx = e.parsePolicyContext(ctx)
 	mode := e.providerMigrationModes[def.Type]
 	if mode != parser.ProviderMigrationProviderAuthoritative {
-		return ""
+		return parser.DiscoveredFile{}, nil
 	}
 	factory, ok := e.sources().providerFactories[def.Type]
 	if !ok || factory == nil {
-		return ""
+		return parser.DiscoveredFile{}, nil
 	}
 	provider := factory.NewProvider(parser.ProviderConfig{
 		Roots:          e.sources().agentDirs[def.Type],
@@ -20264,11 +20290,10 @@ func (e *Engine) findProviderSourceFile(
 		PreferStoredSource: true,
 	})
 	if err != nil {
-		log.Printf("%s provider source lookup: %v", def.Type, err)
-		return ""
+		return parser.DiscoveredFile{}, err
 	}
 	if !found {
-		return ""
+		return parser.DiscoveredFile{}, nil
 	}
 	// A fork session ID (Piebald piebald:<chat>-<row>) resolves to its base
 	// chat source. Confirm the requested fork is actually produced before
@@ -20279,11 +20304,18 @@ func (e *Engine) findProviderSourceFile(
 			Source:  source,
 			Machine: machine,
 		})
-		if err != nil || !providerOutcomeContainsSession(outcome, sessionID) {
-			return ""
+		if err != nil {
+			return parser.DiscoveredFile{}, err
+		}
+		if !providerOutcomeContainsSession(outcome, sessionID) {
+			return parser.DiscoveredFile{}, nil
 		}
 	}
-	return providerDiscoveredPath(source)
+	path := providerDiscoveredPath(source)
+	file := parser.DiscoveredFile{Path: path, Agent: def.Type, Project: source.ProjectHint, ProviderSource: &source, ProviderProcess: true}
+	file.Machine = e.machineForProviderSource(def.Type, source, path)
+	applyS3DiscoveredSource(&file, source)
+	return file, nil
 }
 
 // providerSessionSourceMtime resolves a session's authoritative source-backed
@@ -20723,15 +20755,15 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 func (e *Engine) SyncSingleSessionContext(
 	ctx context.Context, sessionID string,
 ) (err error) {
-	return e.syncSingleSessionContext(ctx, sessionID, false)
+	return e.syncSingleSessionContext(ctx, sessionID, false, nil, nil)
 }
 
 // TrySyncSingleSessionContext refreshes one session only when the writer is available.
 func (e *Engine) TrySyncSingleSessionContext(ctx context.Context, sessionID string) error {
-	return e.syncSingleSessionContext(ctx, sessionID, true)
+	return e.syncSingleSessionContext(ctx, sessionID, true, nil, nil)
 }
 
-func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string, foreground bool, selected ...parser.DiscoveredFile) (err error) {
+func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string, foreground bool, selected *parser.DiscoveredFile, publishedID *string) (err error) {
 	if e.sourceSyncErr != nil {
 		return e.sourceSyncErr
 	}
@@ -20742,7 +20774,7 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 		)
 	}
 	ctx = e.parsePolicyContext(ctx)
-	if err := e.lockTargetedSync(foreground); err != nil {
+	if err := e.lockTargetedSync(ctx, foreground); err != nil {
 		return err
 	}
 	preserved := false
@@ -20763,7 +20795,7 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 	e.resetSourceClaims()
 
 	host, _ := parser.StripHostPrefix(sessionID)
-	if host != "" && len(selected) == 0 && !isS3SourcePath(e.db.GetSessionFilePath(ctx, sessionID)) {
+	if host != "" && selected == nil && !isS3SourcePath(e.db.GetSessionFilePath(ctx, sessionID)) {
 		return fmt.Errorf(
 			"cannot sync remote session %s locally", sessionID,
 		)
@@ -20788,8 +20820,8 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 	}
 
 	var path string
-	if len(selected) > 0 {
-		path = selected[0].Path
+	if selected != nil {
+		path = selected.Path
 	} else {
 		path = e.FindSourceFile(ctx, sessionID)
 	}
@@ -20813,8 +20845,8 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 		Agent:      agent,
 		ForceParse: true,
 	}
-	if len(selected) > 0 {
-		file = selected[0]
+	if selected != nil {
+		file = *selected
 		file.ForceParse = true
 	}
 	e.hydrateS3DiscoveredFile(ctx, sessionID, &file)
@@ -20951,7 +20983,7 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 		}()
 	}
 	preserved, sessionsChanged, err = e.processAndWriteSessionFile(
-		ctx, file, sessionID,
+		ctx, file, sessionID, publishedID,
 	)
 	return err
 }
@@ -20964,6 +20996,7 @@ func (e *Engine) syncSingleSessionContext(ctx context.Context, sessionID string,
 // change event. The caller must hold syncMu.
 func (e *Engine) processAndWriteSessionFile(
 	ctx context.Context, file parser.DiscoveredFile, requestedSessionID string,
+	publishedID ...*string,
 ) (preserved bool, sessionsChanged bool, err error) {
 	defer func() {
 		if ctx.Err() == nil {
@@ -21325,6 +21358,30 @@ func (e *Engine) processAndWriteSessionFile(
 		e.recordProviderStatHash(ctx, *res.providerStatHash)
 	}
 
+	if len(publishedID) > 0 && publishedID[0] != nil {
+		var roots []string
+		for i, pr := range res.results {
+			parent := pr.Session.ParentSessionID
+			if parent != "" {
+				parent = e.applyIDPrefixToSessionIDs([]string{parent})[0]
+			}
+			if resultIDs[i] != requestedSessionID && slices.Contains(resultIDs, parent) {
+				continue
+			}
+			if !slices.Contains(writtenIDs, resultIDs[i]) {
+				continue
+			}
+			if resultIDs[i] == requestedSessionID {
+				roots = []string{requestedSessionID}
+				break
+			}
+			roots = append(roots, resultIDs[i])
+		}
+		if len(roots) != 1 {
+			return preserved, sessionsChanged, fmt.Errorf("source %q produced %d eligible sessions: %v", file.Path, len(roots), roots)
+		}
+		*publishedID[0] = roots[0]
+	}
 	return preserved, sessionsChanged, nil
 }
 
