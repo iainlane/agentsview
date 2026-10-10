@@ -89,7 +89,10 @@ func resolveRawSessionID(
 	if err := database.RequireSourceSync(ctx); err != nil {
 		return input, false
 	}
+	return resolveSourceSessionID(agentDirs, input)
+}
 
+func resolveSourceSessionID(agentDirs map[parser.AgentType][]string, input string) (string, bool) {
 	// Canonical disk probe: if the input starts with a known
 	// agent prefix, trust that interpretation first and strip
 	// before resolving the source (which rejects IDs with
@@ -250,6 +253,7 @@ func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
 		appCfg,
 		archiveQueryPolicy{
 			AutoStart:            true,
+			SkipInitialSync:      true,
 			ReadOnlyDaemon:       archiveQueryUseReadOnlyDaemon,
 			DirectReadOnlyAction: "refresh session usage directly",
 		},
