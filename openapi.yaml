@@ -6592,9 +6592,6 @@ components:
     ServiceSyncInput:
       additionalProperties: false
       properties:
-        foreground:
-          description: Try archived refreshes without waiting; wait for first imports; reject required archive rebuilds
-          type: boolean
         id:
           type: string
         path:
