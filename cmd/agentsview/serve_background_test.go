@@ -1573,6 +1573,44 @@ func TestEnsureBackgroundServeLaunchLoserWaitsThroughReplacementGap(
 	assert.Equal(t, newPort, rt.Port)
 }
 
+func TestEnsureBackgroundServeWaitsForLaunchOwnerAfterTransientStartupLock(t *testing.T) {
+	for _, oldVersion := range []string{"", "1.0.0"} {
+		t.Run("incumbent="+oldVersion, func(t *testing.T) {
+			setTestVersion(t, "1.1.0")
+			dir := runtimeTestDir(t)
+			launchLock, ok := acquireBackgroundLaunchLock(dir)
+			require.True(t, ok)
+			t.Cleanup(func() { _ = launchLock.Unlock() })
+			unlockStart := holdExternalDaemonStartLock(t, dir)
+			if oldVersion != "" {
+				host, port := testPingServer(t)
+				writeDaemonRuntimeForTest(t, dir, host, port, oldVersion, false)
+			}
+			host, port := testPingServer(t)
+
+			probes := 0
+			oldProbe := backgroundServeProbeHook
+			backgroundServeProbeHook = func() {
+				probes++
+				switch probes {
+				case 2:
+					// The start lock clears before the launch owner publishes its daemon.
+					unlockStart()
+				case 3:
+					writeDaemonRuntimeForTest(t, dir, host, port, version, false)
+					require.NoError(t, launchLock.Unlock())
+				}
+			}
+			t.Cleanup(func() { backgroundServeProbeHook = oldProbe })
+
+			rt, err := ensureBackgroundServe(t.Context(), &config.Config{DataDir: dir}, time.Second, true)
+			require.NoError(t, err)
+			require.NotNil(t, rt)
+			assert.Equal(t, port, rt.Port)
+		})
+	}
+}
+
 func TestEnsureBackgroundServeChecksTooNewDatabaseAfterStartupWait(
 	t *testing.T,
 ) {

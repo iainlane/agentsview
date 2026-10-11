@@ -823,10 +823,12 @@ func waitForBackgroundLaunchOwner(
 			_, _, _ = waitForExternalServeStartup(
 				ctx, dataDir, authToken, time.Until(deadline),
 			)
+		}
+		if ctx.Err() != nil {
 			return
 		}
 		if rt := FindDaemonRuntime(dataDir, authToken); rt != nil &&
-			!rt.ReadOnly {
+			!rt.ReadOnly && !shouldReplaceDaemonRuntime(rt, version) {
 			return
 		}
 		if IsLocalDaemonActive(dataDir, authToken) {
@@ -834,7 +836,7 @@ func waitForBackgroundLaunchOwner(
 				ctx, dataDir, time.Until(deadline), authToken,
 			) {
 				if rt := FindDaemonRuntime(dataDir, authToken); rt != nil &&
-					!rt.ReadOnly {
+					!rt.ReadOnly && !shouldReplaceDaemonRuntime(rt, version) {
 					return
 				}
 			}
