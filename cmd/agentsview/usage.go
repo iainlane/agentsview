@@ -63,6 +63,7 @@ func defaultUsageDateRange(
 }
 
 type UsageDailyConfig struct {
+	ctx       context.Context
 	JSON      bool
 	Since     string
 	Until     string
@@ -168,7 +169,7 @@ func runUsageDailyResult(cfg UsageDailyConfig) error {
 	}
 	noDefaultRange := cfg.All || cfg.Since != "" || cfg.Until != ""
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(commandContext(cfg.ctx), os.Interrupt)
 	defer stop()
 	backend, cleanup, err := resolveArchiveQueryBackend(ctx, archiveQueryPolicy{
 		Offline:              cfg.Offline,
@@ -247,6 +248,7 @@ func noTokenDataNote(agent string, totals db.UsageTotals) string {
 }
 
 type UsageStatuslineConfig struct {
+	ctx     context.Context
 	JSON    bool
 	Agent   string
 	Offline bool
@@ -289,7 +291,7 @@ func runUsageStatuslineResult(cfg UsageStatuslineConfig) error {
 		Timezone: timezone,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(commandContext(cfg.ctx), 30*time.Second)
 	defer cancel()
 	backend, cleanup, err := resolveArchiveQueryBackend(ctx, archiveQueryPolicy{
 		Offline:              cfg.Offline,
@@ -372,9 +374,7 @@ func ensureFreshData(
 	if skip {
 		return
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = commandContext(ctx)
 
 	// Silence engine worker log.Printf lines (e.g. "db:
 	// InsertMessages (N msgs)") for both branches so --json and

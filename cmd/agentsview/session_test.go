@@ -154,6 +154,7 @@ type remoteUsageSpec struct {
 	bearer        string          // if set, asserts Authorization: Bearer <bearer>
 	serverRunning bool            // include server_running:true in the usage body
 	usageBlock    <-chan struct{} // optional block before serving /usage
+	archiveStale  bool
 }
 
 // remoteUsageRequests records what the fake usage server observed.
@@ -202,6 +203,8 @@ func newRemoteUsageServer(
 		}
 		reqs.RequestPath = append(reqs.RequestPath, r.URL.Path)
 		switch r.URL.Path {
+		case "/api/v1/sync/status":
+			writeJSONResponse(w, fmt.Sprintf(`{"archive_stale":%t}`, spec.archiveStale))
 		case "/api/v1/sync":
 			assert.Equal(t, http.MethodPost, r.Method)
 			assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
@@ -1387,10 +1390,13 @@ func TestSessionExport_RejectsPGFlag(t *testing.T) {
 
 func TestSessionUsage_ServerFlagUsesHTTP(t *testing.T) {
 	newAgentDataDir(t)
+	t.Setenv("AGENTSVIEW_SERVER_TOKEN", "server-token")
 
 	ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{
 		canonicalID:   "remote-session",
 		serverRunning: true,
+		archiveStale:  true,
+		bearer:        "server-token",
 	})
 
 	cmd := sessionUsageCommand(t,
@@ -1407,6 +1413,8 @@ func TestSessionUsage_ServerFlagUsesHTTP(t *testing.T) {
 	}, reqs.SyncInput)
 	assert.Equal(t, []string{
 		"/api/v1/version",
+		"/api/v1/sync/status",
+		"/api/v1/sync",
 		"/api/v1/sessions/remote-session",
 		"/api/v1/sessions/sync",
 		"/api/v1/sessions/remote-session/usage",
@@ -1425,8 +1433,9 @@ func TestSessionUsage_NoSyncPreservesAuthenticatedResolution(t *testing.T) {
 	const rawID = "session-uuid"
 	const canonicalID = "codex:" + rawID
 	ts, reqs := newRemoteUsageServer(t, remoteUsageSpec{
-		canonicalID: canonicalID,
-		bearer:      "test-token",
+		canonicalID:  canonicalID,
+		bearer:       "test-token",
+		archiveStale: true,
 	})
 	cmd := sessionUsageCommand(t, "session", "usage", rawID,
 		"--server", ts.URL, "--server-token-file", tokenFile, "--no-sync")
@@ -1440,6 +1449,8 @@ func TestSessionUsage_NoSyncPreservesAuthenticatedResolution(t *testing.T) {
 	assert.Equal(t, "breakdown=true&subagents=true", reqs.UsageQuery)
 	assert.Empty(t, reqs.SyncInput.ID)
 	assert.NotContains(t, reqs.RequestPath, "/api/v1/sessions/sync")
+	assert.NotContains(t, reqs.RequestPath, "/api/v1/sync/status")
+	assert.NotContains(t, reqs.RequestPath, "/api/v1/sync")
 	assert.Contains(t, reqs.RequestPath, "/api/v1/sessions/"+rawID)
 	assert.Contains(t, reqs.RequestPath, "/api/v1/sessions/"+canonicalID)
 }
@@ -1616,6 +1627,7 @@ func TestSessionUsage_ServerFlagOwnOnlySkipsSubagents(t *testing.T) {
 	assert.Empty(t, reqs.SyncInput.ID,
 		"--own-only must not ask the daemon to refresh subagents")
 	assert.Equal(t, []string{
+		"/api/v1/sync/status",
 		"/api/v1/sessions/remote-session",
 		"/api/v1/sessions/remote-session/usage",
 	}, reqs.RequestPath)
@@ -1773,77 +1785,6 @@ func TestSessionUsage_DefaultUsesArchivedReadOnlyDaemonUsage(t *testing.T) {
 	cmd := sessionUsageCommand(t, "session", "usage", "remote-session")
 
 	out, code, err := sessionUsageDataForCommand(cmd, "remote-session")
-	require.NoError(t, err)
-	require.NotNil(t, out)
-	assert.Equal(t, tokenUseExitOK, code)
-	assert.Equal(t, 42, out.TotalOutputTokens)
-	assert.Equal(t, []string{
-		"/api/v1/sessions/remote-session",
-		"/api/v1/sessions/sync",
-		"/api/v1/sessions/remote-session/usage",
-	}, *paths)
-	assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
-}
-
-func TestTokenUse_UsesDiscoveredDaemon(t *testing.T) {
-	dataDir := newAgentDataDir(t)
-
-	var gotUsagePath string
-	ts := sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/sessions/remote-session":
-			_, _ = w.Write([]byte(`{
-				"id": "remote-session",
-				"agent": "codex",
-				"project": "remote-project"
-			}`))
-		case "/api/v1/sessions/sync":
-			var input service.SyncInput
-			if !assert.NoError(t, json.UnmarshalRead(r.Body, &input)) {
-				return
-			}
-			assert.Equal(t, service.SyncInput{
-				ID: "remote-session", Subagents: true,
-			}, input)
-			_, _ = w.Write([]byte(`{"id":"remote-session"}`))
-		case "/api/v1/sessions/remote-session/usage":
-			gotUsagePath = r.URL.Path
-			_, _ = w.Write([]byte(`{
-				"session_id": "remote-session",
-				"agent": "codex",
-				"project": "remote-project",
-				"total_output_tokens": 42,
-				"peak_context_tokens": 2048,
-				"has_token_data": true,
-				"cost": {"microdollars": 500000},
-				"has_cost": true,
-				"models": ["gpt-5.1"],
-				"unpriced_models": []
-			}`))
-		default:
-			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
-			http.NotFound(w, r)
-		}
-	})
-	registerSyncRouteTestRuntime(t, dataDir, ts.URL)
-
-	out, code, err := sessionUsageData("remote-session")
-	require.NoError(t, err)
-	require.NotNil(t, out)
-	assert.Equal(t, "/api/v1/sessions/remote-session/usage", gotUsagePath)
-	assert.Equal(t, tokenUseExitOK, code)
-	assert.Equal(t, "remote-session", out.SessionID)
-	assert.True(t, out.ServerRunning)
-	assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
-}
-
-func TestTokenUse_UsesArchivedReadOnlyDaemonUsage(t *testing.T) {
-	dataDir := newAgentDataDir(t)
-	ts, paths := readOnlySessionUsageRuntimeServer(t)
-	registerTestRuntime(t, dataDir, ts.URL, true)
-
-	out, code, err := sessionUsageData("remote-session")
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Equal(t, tokenUseExitOK, code)
@@ -2213,6 +2154,8 @@ func TestSessionSync_PGFlagRefusesWrite(t *testing.T) {
 func TestSessionSync_ServerFlagTreatsPathShapedArgAsRemotePath(t *testing.T) {
 	dataDir := newAgentDataDir(t)
 	writeTestConfig(t, dataDir, `not = valid = toml`)
+	t.Setenv("AGENTSVIEW_SERVER_TOKEN", "server-token")
+	var startupWaited bool
 
 	var got struct {
 		ID   string `json:"id"`
@@ -2220,6 +2163,18 @@ func TestSessionSync_ServerFlagTreatsPathShapedArgAsRemotePath(t *testing.T) {
 	}
 	ts := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "Bearer server-token", r.Header.Get("Authorization"))
+			switch r.URL.Path {
+			case "/api/v1/sync/status":
+				writeJSONResponse(w, `{"archive_stale":true}`)
+				return
+			case "/api/v1/sync":
+				assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
+				startupWaited = true
+				writeDoneSSE(t, w, agentsync.SyncStats{})
+				return
+			}
+			assert.True(t, startupWaited)
 			assert.Equal(t, http.MethodPost, r.Method)
 			assert.Equal(t, "/api/v1/sessions/sync", r.URL.Path)
 			if !assert.NoError(t, json.UnmarshalRead(r.Body, &got)) {
@@ -2292,9 +2247,21 @@ func TestSessionSync_ColdArchiveWriteAutoStartsDaemon(t *testing.T) {
 	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
 
 	var syncCalled bool
+	var startupWaited bool
 	ts := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter, r *http.Request,
 	) {
+		if r.URL.Path == "/api/v1/sync/status" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"archive_stale":true}`))
+			return
+		}
+		if r.URL.Path == "/api/v1/sync" {
+			assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
+			startupWaited = true
+			writeDoneSSE(t, w, agentsync.SyncStats{})
+			return
+		}
 		if !assert.Equal(t, "/api/v1/sessions/sync", r.URL.Path) {
 			return
 		}
@@ -2302,6 +2269,7 @@ func TestSessionSync_ColdArchiveWriteAutoStartsDaemon(t *testing.T) {
 			return
 		}
 		syncCalled = true
+		assert.True(t, startupWaited)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"daemon-synced"}`))
 	}))

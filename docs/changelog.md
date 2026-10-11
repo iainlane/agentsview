@@ -50,6 +50,9 @@ The latest release is
   daemons keep the previous guard after pagination and can return short pages.
   Default MCP continuations must echo the returned `activity_cutoff` with the
   numeric cursor; restart searches begun before upgrading.
+- Search and browse your existing archive while an upgrade rebuilds transcripts.
+  Browser, CLI, and MCP warnings mark results that may be stale, including after
+  a failed rebuild.
 - Keep both Cursor conversations when S3 objects in different projects share
   a session ID. A one-time archive rebuild recovers overwritten Cursor S3
   conversations while preserving archived sessions and stars.

@@ -10,6 +10,10 @@ assistant clients can use it to search prior sessions, inspect a session before
 opening it, fetch message slices, search raw content, and summarize token usage
 without leaving the assistant.
 
+When a daemon serves an outdated archive, including with `--no-sync`, tool
+results include "Warning: Archive results may be stale." The warning clears
+after the daemon installs the replacement archive.
+
 ## When To Use It
 
 Use the MCP server when you want a coding assistant to answer questions such as:

@@ -81,10 +81,7 @@ func runSessionUsage(cmd *cobra.Command, sessionID, format string) {
 func sessionUsageDataForCommand(
 	cmd *cobra.Command, sessionID string,
 ) (*sessionUsageOutput, int, error) {
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := commandContext(cmd.Context())
 
 	ownOnly, _ := cmd.Flags().GetBool("own-only")
 	noSync, _ := cmd.Flags().GetBool("no-sync")
@@ -105,6 +102,11 @@ func sessionUsageDataForCommand(
 			if err := requireRemoteSubagentUsageSupport(
 				ctx, remote, token,
 			); err != nil {
+				return nil, tokenUseExitErr, err
+			}
+		}
+		if !query.NoSync {
+			if err := waitDaemonStartupRebuild(ctx, transport{URL: remote}, token); err != nil {
 				return nil, tokenUseExitErr, err
 			}
 		}
@@ -172,9 +174,6 @@ func httpSessionUsageData(
 	token string,
 	query sessionUsageQuery,
 ) (*sessionUsageOutput, int, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	sessionID := query.SessionID
 	resolvedID, err := resolveServiceSessionID(
 		ctx, servicehttp.NewHTTPBackend(baseURL, token, false, ""), sessionID,

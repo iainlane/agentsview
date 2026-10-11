@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	stdlibsync "sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -1567,6 +1569,7 @@ func TestHumaTriggerSyncLocalNoSyncResyncsStaleDB(t *testing.T) {
 	f := newSyncRouteFixture(t, withStaleDB())
 	f.writeClaudeSession(t, "proj/session.jsonl", "stale no sync route")
 	require.True(t, f.db.NeedsResync())
+	require.Nil(t, f.srv.engine)
 	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sync", nil)
 
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
@@ -2321,4 +2324,165 @@ func TestOnDemandSyncEngineKeepsStartupProvidersUntilRestart(t *testing.T) {
 
 	assert.Equal(t, []string{geminiDir},
 		engine.ReconciliationRootsForAgent(string(parser.AgentGemini)))
+}
+
+// newStartupRebuildFixture serves a stale archive with a daemon engine whose
+// startup attempt has not completed, as runServe does while it rebuilds.
+func newStartupRebuildFixture(t *testing.T) (*syncRouteFixture, *syncpkg.Engine) {
+	t.Helper()
+	f := newSyncRouteFixture(t, withStaleDB(), withRemoteHosts(config.RemoteHost{
+		Host: "alpha", URL: "https://alpha.example.test", Token: "remote-token",
+	}))
+	engine := syncpkg.NewEngine(t.Context(), f.db, syncpkg.EngineConfig{DeferStartupMaintenance: true})
+	t.Cleanup(engine.Close)
+	f.srv.engine = engine
+	f.srv.localSyncRunner = func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+		return syncpkg.SyncStats{}, errors.New("startup-only wait repeated ingestion")
+	}
+	return f, engine
+}
+
+func TestStartupRebuildRejectsCompetingRequests(t *testing.T) {
+	sse := []string{"text/event-stream"}
+	routes := []struct {
+		path    string
+		body    any
+		accepts []string
+		status  int
+		// closedStatus is the status once the rebuild has closed the writer.
+		closedStatus int
+	}{
+		{
+			"/api/v1/sync?wait=false", nil,
+			[]string{"application/json", "text/event-stream"},
+			http.StatusConflict, http.StatusConflict,
+		},
+		{"/api/v1/resync", nil, sse, http.StatusConflict, http.StatusConflict},
+		{
+			"/api/v1/sync/remotes", jsontext.Value(`{"full":false,"include_local":false,"hosts":[{"host":"alpha"}]}`),
+			sse, http.StatusConflict, http.StatusConflict,
+		},
+		{
+			"/api/v1/sessions/sync", jsontext.Value(`{"path":"fixture.jsonl"}`), sse,
+			http.StatusConflict, http.StatusConflict,
+		},
+		{
+			"/api/v1/push/pg", jsontext.Value(`{"full":false,"replica":{"url":"postgres://localhost/archive","machine_name":"fixture"}}`),
+			sse, http.StatusConflict, http.StatusServiceUnavailable,
+		},
+		{
+			"/api/v1/push/duckdb", jsontext.Value(`{"full":false}`), sse,
+			http.StatusConflict, http.StatusServiceUnavailable,
+		},
+		// Request validation still runs before the rebuild check.
+		{
+			"/api/v1/sync/remotes", jsontext.Value(`{"full":false,"include_local":false,"hosts":[]}`), sse,
+			http.StatusBadRequest, http.StatusBadRequest,
+		},
+		{
+			"/api/v1/sync/remotes", jsontext.Value(`{"full":false,"include_local":false,"hosts":[{"host":"unknown"}]}`),
+			sse, http.StatusForbidden, http.StatusForbidden,
+		},
+		{
+			"/api/v1/sessions/sync", jsontext.Value(`{"path":"a","id":"b"}`), sse,
+			http.StatusBadRequest, http.StatusBadRequest,
+		},
+	}
+	for _, writerClosed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("writer closed %t", writerClosed), func(t *testing.T) {
+			f, _ := newStartupRebuildFixture(t)
+			f.srv.cfg.DuckDB.MachineName = "fixture"
+			if writerClosed {
+				require.NoError(t, f.db.CloseWriter())
+				t.Cleanup(func() { assert.NoError(t, f.db.ReopenWriter()) })
+			}
+			for _, route := range routes {
+				want := route.status
+				if writerClosed {
+					want = route.closedStatus
+				}
+				for _, accept := range route.accepts {
+					w := serveJSON(t, f.handler, http.MethodPost, route.path, route.body, withAccept(accept))
+					assert.Equal(t, want, w.Code, "%s (%s): %s", route.path, accept, w.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestStartupRebuildWaitOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome string
+		// json drops the response flusher, so the handler answers with JSON
+		// instead of an SSE stream.
+		json     bool
+		status   int
+		resync   bool
+		wantBody []string
+	}{
+		{
+			name: "success", outcome: "success", status: http.StatusOK,
+			wantBody: []string{"event: done"},
+		},
+		{
+			name: "failure", outcome: "failure", status: http.StatusOK,
+			wantBody: []string{"event: error", `"resync_required":true`},
+		},
+		{
+			name: "failure JSON", outcome: "failure", json: true,
+			status: http.StatusConflict, resync: true,
+			wantBody: []string{"archive data version changed"},
+		},
+		{
+			name: "cancel", outcome: "cancel", status: http.StatusOK,
+			wantBody: []string{"event: error"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f, engine := newStartupRebuildFixture(t)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost,
+					"/api/v1/sync?wait=true&startup_only=true", nil)
+				req.Host = "127.0.0.1:0"
+				req.Header.Set("Origin", "http://127.0.0.1:0")
+				req.Header.Set("Accept", "text/event-stream")
+				w := httptest.NewRecorder()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					var writer http.ResponseWriter = w
+					if tc.json {
+						writer = struct{ http.ResponseWriter }{w}
+					}
+					f.handler.ServeHTTP(writer, req)
+				}()
+				defer func() { cancel(); <-done }()
+				synctest.Wait()
+				if !tc.json {
+					assert.True(t, w.Flushed)
+					assert.Contains(t, w.Body.String(), "Waiting for")
+				}
+				switch tc.outcome {
+				case "success":
+					_, err := engine.ResyncAllWithOptions(t.Context(), nil, syncpkg.RebuildOptions{})
+					require.NoError(t, err)
+					engine.RecordStartupReconciled(syncpkg.SyncStats{}, nil)
+				case "failure":
+					engine.RecordStartupReconciled(syncpkg.SyncStats{}, errors.New("build failed"))
+				case "cancel":
+					cancel()
+				}
+				engine.ReleaseStartupMaintenance()
+				<-done
+				assert.Equal(t, tc.status, w.Code)
+				assert.Equal(t, tc.resync, w.Header().Get(ResyncRequiredHeader) == "true")
+				for _, want := range tc.wantBody {
+					assert.Contains(t, w.Body.String(), want)
+				}
+			})
+		})
+	}
 }

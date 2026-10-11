@@ -6,12 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/doordash-oss/oapi-codegen-dd/v3/pkg/runtime"
 
 	"go.kenn.io/agentsview/internal/apiclient"
 	"go.kenn.io/agentsview/internal/server"
+	syncpkg "go.kenn.io/agentsview/internal/sync"
 )
 
 // daemonPushOperation invokes one generated streaming daemon operation and
@@ -87,6 +91,40 @@ func startupSyncOperation(
 		return nil, nil, nil, err
 	}
 	return response.HTTPResponse, response.Body, response.Stream200, nil
+}
+
+func waitDaemonStartupRebuild(ctx context.Context, tr transport, authToken string) error {
+	ctx, _ = apiclient.TrackArchiveFreshness(ctx, nil)
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	api, err := apiclient.NewHTTPClient(tr.URL, authToken, &http.Client{Timeout: 30 * time.Second})
+	if err != nil {
+		return err
+	}
+	status, err := api.GetAPIV1SyncStatusWithResponse(ctx)
+	if status == nil || err != nil {
+		return err
+	}
+	if !status.JSON200.ArchiveStale {
+		return nil
+	}
+	api, err = apiclient.NewHTTPClient(tr.URL, authToken, &http.Client{Timeout: 0})
+	if err != nil {
+		return err
+	}
+	response, body, stream, err := startupSyncOperation(ctx, api, nil)
+	if response == nil {
+		return err
+	}
+	_, err = consumeDaemonSyncResponse(response, body, stream, false, func(p syncpkg.Progress) {
+		if p.Detail != "" {
+			fmt.Fprintln(os.Stderr, p.Detail)
+		}
+	})
+	if errors.Is(err, errDaemonResyncRequired) {
+		return nil
+	}
+	return err
 }
 
 // postDaemonPush delegates a push to the local daemon. It negotiates an SSE

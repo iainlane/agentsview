@@ -36,7 +36,7 @@ func handleReadOnly(w http.ResponseWriter, err error) bool {
 	if errors.Is(err, db.ErrWriterClosed) {
 		w.Header().Set("Retry-After", writerClosedRetryAfterSeconds)
 		writeError(w, http.StatusServiceUnavailable,
-			"archive is briefly read-only for a maintenance pass; retry shortly")
+			"archive is read-only during maintenance or rebuilding; retry after it finishes")
 		return true
 	}
 	return false

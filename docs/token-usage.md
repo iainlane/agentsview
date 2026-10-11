@@ -656,10 +656,10 @@ reports can finish beyond the server's normal write timeout. Press Ctrl+C to
 stop waiting; shared cache preparation can continue in the daemon. Canceling
 daemon startup also leaves the detached child running.
 
-Required archive reparsing finishes before the daemon serves requests. Startup
-waits show phases and continue while progress updates arrive, including when a
-foreground server is starting in another terminal. Restart older daemons after
-upgrading to provide the usage progress endpoint.
+During an upgrade rebuild, the daemon serves retained archive data. Daily
+reports can read it and warn on stderr when it is stale. Archive-only startup
+still finishes required reparsing before serving requests. Restart older daemons
+after upgrading to provide the usage progress endpoint.
 
 ```bash
 agentsview usage daily [flags]
@@ -1058,13 +1058,16 @@ time.
 
 `usage daily` reads committed archive data. When it starts a daemon, routine
 source ingestion runs after readiness. Run `agentsview sync` before the report
-when it must include new source changes. Required archive reparsing still
-finishes before the daemon serves requests.
+when it must include new source changes. During an upgrade rebuild, daemon
+reads can return retained archive data with a stale warning on stderr.
 
-`session usage`, `token-use`, and `usage statusline` complete pending startup
-ingestion before querying. This also applies when a previous daily report
-started the daemon. Once startup ingestion is complete, subsequent queries do
-not repeat a full sync; the daemon's file watcher handles later source changes.
+By default, `session usage`, `token-use`, and `usage statusline` wait for pending
+startup ingestion before querying, including an upgrade rebuild. This also
+applies when a previous daily report started the daemon. `session usage` and
+`usage statusline` accept `--no-sync` to read retained data and warn on stderr
+when it is stale. For `token-use`, use `session usage <id> --no-sync` instead. Once
+startup ingestion is complete, subsequent queries do not repeat a full sync; the daemon's
+file watcher handles later source changes.
 
 `--no-sync` skips source refresh and starts any new daemon without automatic
 sync. It does not disable sync on an already-running daemon. `--offline` reads

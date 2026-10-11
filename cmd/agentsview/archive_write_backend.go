@@ -388,6 +388,9 @@ func resolveArchiveWriteBackend(
 		return nil, nil, err
 	}
 	if tr.Mode == transportHTTP && !tr.ReadOnly {
+		if err := waitDaemonStartupRebuild(ctx, tr, appCfg.AuthToken); err != nil {
+			return nil, nil, err
+		}
 		if tr.Runtime != nil && tr.Runtime.NoSync {
 			appCfg.NoSync = true
 		}

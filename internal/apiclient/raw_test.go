@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRawRequestLeavesArchiveAndErrorBodiesUnread(t *testing.T) {
+func TestRawRequestTracksFreshnessWithoutReadingBodies(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusBadRequest} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			release := make(chan struct{})
@@ -23,6 +23,7 @@ func TestRawRequestLeavesArchiveAndErrorBodiesUnread(t *testing.T) {
 				assert.Equal(t, http.MethodPost, r.Method)
 				assert.Equal(t, "/api/v1/remote-sync/archive", r.URL.Path)
 				w.Header().Set("Content-Type", "application/x-tar")
+				w.Header().Set(ArchiveStaleHeader, "true")
 				w.WriteHeader(status)
 				_, _ = io.WriteString(w, "first")
 				w.(http.Flusher).Flush()
@@ -33,6 +34,7 @@ func TestRawRequestLeavesArchiveAndErrorBodiesUnread(t *testing.T) {
 			defer finish()
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
+			ctx, stale := TrackArchiveFreshness(ctx, nil)
 			response, err := RawRequest(server.URL, server.Client(), func(client *Client) error {
 				_, err := client.PostAPIV1RemoteSyncArchiveWithResponse(ctx, &PostAPIV1RemoteSyncArchiveRequestOptions{})
 				return err
@@ -41,6 +43,7 @@ func TestRawRequestLeavesArchiveAndErrorBodiesUnread(t *testing.T) {
 			require.NotNil(t, response)
 			defer response.Body.Close()
 			assert.Equal(t, status, response.StatusCode)
+			assert.Equal(t, status == http.StatusOK, stale())
 			first := make([]byte, 5)
 			_, err = io.ReadFull(response.Body, first)
 			require.NoError(t, err)

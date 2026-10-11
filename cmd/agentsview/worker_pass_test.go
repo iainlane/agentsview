@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -523,8 +526,14 @@ func TestRunWorkerResyncBuildHonorsRequiredOnly(t *testing.T) {
 	}
 }
 
-func TestRunWorkerResyncBuildPublishesAndClearsWorkerProgress(t *testing.T) {
+func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
 	cfg := testConfigWithClaudeFixture(t)
+	cfg.Host = "127.0.0.1"
+	seed, err := db.Open(t.Context(), cfg.DBPath)
+	require.NoError(t, err)
+	dbtest.SeedSessionWithMessages(t, seed, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")})
+	require.NoError(t, seed.Close())
+	markArchiveStale(t, cfg.DBPath)
 	database, _ := openTestWriteDB(t, cfg)
 	engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{})
 	t.Cleanup(engine.Close)
@@ -542,6 +551,16 @@ func TestRunWorkerResyncBuildPublishesAndClearsWorkerProgress(t *testing.T) {
 		default:
 		}
 	}()
+	handler := server.New(cfg, database, engine).Handler()
+	readRetained := func() {
+		for _, path := range []string{"/api/v1/sessions/retained/messages", "/api/v1/search?q=retained"} {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0"+path, nil))
+			assert.Equal(t, http.StatusOK, w.Code)
+			assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
+			assert.Contains(t, strings.NewReplacer("<mark>", "", "</mark>", "").Replace(w.Body.String()), "retained transcript")
+		}
+	}
 	sentinel := errors.New("resync worker stopped")
 	restore := stubLaunchSyncWorker(t, func(
 		_ context.Context, _ config.Config, request syncWorkerRequest, onLine func(workerLine),
@@ -575,6 +594,9 @@ func TestRunWorkerResyncBuildPublishesAndClearsWorkerProgress(t *testing.T) {
 		require.FailNow(t, "resync worker did not start")
 	}
 
+	require.True(t, database.WriterClosed())
+	readRetained()
+
 	current, active := engine.CurrentProgress()
 	require.True(t, active,
 		"daemon health must observe resync before its first worker update")
@@ -602,6 +624,7 @@ func TestRunWorkerResyncBuildPublishesAndClearsWorkerProgress(t *testing.T) {
 	_, active = engine.CurrentProgress()
 	assert.False(t, active,
 		"completed resync worker must clear daemon-visible progress")
+	readRetained()
 }
 
 // TestRunWorkerSyncPassNoWorkerRecordsNothing pins first-attempt semantics for

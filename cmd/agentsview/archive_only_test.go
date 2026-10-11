@@ -38,7 +38,7 @@ func TestArchiveOnlyRefusesReceivingHostOnRestart(t *testing.T) {
 	require.NoError(t, err)
 	for range 2 {
 		out, err := runRuntimeWarningHelperProcess(t, "serve", "TestServeStaleArchiveHelperProcess",
-			[]string{"AGENTSVIEW_STALE_SERVE_CONFIG=" + string(data), "AGENTSVIEW_STALE_SERVE_SOURCES=" + cfg.AgentDirs[parser.AgentClaude][0]}, "listening at")
+			[]string{"AGENTSVIEW_STALE_SERVE_CONFIG=" + string(data), "AGENTSVIEW_STALE_SERVE_SOURCES=" + cfg.AgentDirs[parser.AgentClaude][0]}, "listening at", 30*time.Second)
 		require.NoError(t, err, string(out))
 		// Read only: a writable open can truncate the WAL while Windows still
 		// maps it for the helper process that just exited.

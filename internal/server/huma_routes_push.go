@@ -578,6 +578,9 @@ func (s *Server) humaReplicaPush(
 		return nil, apiError(http.StatusBadRequest, err.Error())
 	}
 
+	if err := s.rejectStartupRebuild(); err != nil {
+		return nil, err
+	}
 	engine := s.syncEngineForLocal(ctx, local)
 	vectorSource := s.replicaPushVectorSource(target, in.Body.NoVectors)
 	body := in.Body
@@ -659,6 +662,9 @@ func (s *Server) humaMirrorPush(
 		return nil, apiError(http.StatusBadRequest, err.Error())
 	}
 
+	if err := s.rejectStartupRebuild(); err != nil {
+		return nil, err
+	}
 	engine := s.syncEngineForLocal(ctx, local)
 	opts := mirrorPushOptions(in.Body)
 	body := in.Body

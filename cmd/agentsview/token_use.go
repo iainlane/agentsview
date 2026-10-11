@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"go.kenn.io/agentsview/internal/config"
+	"github.com/spf13/cobra"
+
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
 )
@@ -209,7 +210,7 @@ type sessionUsageOutput struct {
 // on-demand sync or direct DB access.
 const startupWaitTimeout = 30 * time.Second
 
-func runTokenUse(args []string) {
+func runTokenUse(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr,
 			"usage: agentsview token-use <session-id>")
@@ -218,7 +219,7 @@ func runTokenUse(args []string) {
 	fmt.Fprintln(os.Stderr,
 		"note: 'token-use' is deprecated; use 'session usage <id>' instead")
 
-	out, code, err := sessionUsageData(args[0])
+	out, code, err := sessionUsageDataForCommand(cmd, args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(tokenUseExitErr)
@@ -231,32 +232,4 @@ func runTokenUse(args []string) {
 		}
 	}
 	os.Exit(code)
-}
-
-func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
-	appCfg, err := config.LoadMinimal()
-	if err != nil {
-		return nil, tokenUseExitErr, fmt.Errorf("loading config: %w", err)
-	}
-
-	if err := os.MkdirAll(appCfg.DataDir, 0o755); err != nil {
-		return nil, tokenUseExitErr,
-			fmt.Errorf("creating data dir: %w", err)
-	}
-
-	ctx := context.Background()
-	backend, cleanup, err := resolveArchiveQueryBackendWithConfig(
-		ctx,
-		appCfg,
-		archiveQueryPolicy{
-			AutoStart:            true,
-			ReadOnlyDaemon:       archiveQueryUseReadOnlyDaemon,
-			DirectReadOnlyAction: "refresh session usage directly",
-		},
-	)
-	if err != nil {
-		return nil, tokenUseExitErr, err
-	}
-	defer closeArchiveQueryBackend(cleanup)
-	return backend.SessionUsage(ctx, sessionUsageQuery{SessionID: sessionID})
 }

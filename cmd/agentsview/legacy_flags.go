@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -8,12 +9,16 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"go.kenn.io/agentsview/internal/apiclient"
 )
 
 func executeCLIWithLegacyFlagCompat(args []string, stdout, stderr io.Writer) error {
 	cmd := newRootCommand()
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
+	ctx, _ := apiclient.TrackArchiveFreshness(context.Background(), func() { fmt.Fprintln(stderr, "Warning: "+apiclient.ArchiveStaleWarning) })
+	cmd.SetContext(ctx)
 
 	normalized, rewrites := normalizeLegacyLongFlags(args, collectLongFlags(cmd))
 	if len(rewrites) > 0 {
@@ -108,4 +113,20 @@ func isNegativeNumber(arg string) bool {
 
 func executeCLI() error {
 	return executeCLIWithLegacyFlagCompat(os.Args[1:], os.Stdout, os.Stderr)
+}
+
+func commandContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+// serverCommandContext keeps a long-running server out of the CLI's one-shot
+// stale-archive warning. A server's outbound calls reach other daemons, such
+// as remote sync hosts, so one unlabeled warning on its stderr would name no
+// host and never repeat. MCP reports staleness on each tool result instead.
+func serverCommandContext(ctx context.Context) context.Context {
+	ctx, _ = apiclient.TrackArchiveFreshness(commandContext(ctx), nil)
+	return ctx
 }

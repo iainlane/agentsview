@@ -22,6 +22,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"go.kenn.io/agentsview/internal/apiclient"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/insight"
@@ -73,7 +74,7 @@ const (
 		service.SemanticSearchIntentHeader + ", " + rawSyncDeviceIDHeader +
 		", " + rawSyncUploadOffsetHeader
 	corsExposedResponseHeaders = rawSyncUploadOffsetHeader + ", " +
-		rawSyncUploadLengthHeader + ", " + rawSyncUploadCompleteHeader + ", Location"
+		rawSyncUploadLengthHeader + ", " + rawSyncUploadCompleteHeader + ", Location, " + apiclient.ArchiveStaleHeader
 )
 
 // Server is the HTTP server that serves the SPA and REST API.
@@ -683,7 +684,7 @@ func (s *Server) humaConfig() huma.Config {
 		"application/json": jsonFormat,
 		"json":             jsonFormat,
 	}
-	cfg.Info.Description = "HTTP API for browsing, searching, syncing, and managing local agent sessions."
+	cfg.Info.Description = "HTTP API for browsing, searching, syncing, and managing local agent sessions. Responses carry X-Agentsview-Archive-Stale: true while a required archive rebuild is pending; GET /api/v1/sync/status reports its state."
 	cfg.OpenAPIPath = "/api/openapi"
 	cfg.DocsPath = ""
 	cfg.SchemasPath = ""
@@ -870,7 +871,7 @@ func (s *Server) Handler() http.Handler {
 				s.protectedPath,
 				corsMiddleware(
 					allowedOrigins, bindAll, s.cfg.Port, bindAllIPs,
-					gzipMiddleware(logMiddleware(s.mux)),
+					gzipMiddleware(logMiddleware(s.archiveStaleMiddleware(s.mux))),
 				),
 			),
 		),
@@ -900,6 +901,15 @@ func (s *Server) Handler() http.Handler {
 	}
 	h = s.idle.Wrap(h)
 	return h
+}
+
+func (s *Server) archiveStaleMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") && s.archiveStale() {
+			w.Header().Set(apiclient.ArchiveStaleHeader, "true")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // cspMiddleware sets a Content-Security-Policy header on non-API

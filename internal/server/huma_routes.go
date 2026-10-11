@@ -503,7 +503,7 @@ func writerClosedError() error {
 	return huma.ErrorWithHeaders(
 		apiError(
 			http.StatusServiceUnavailable,
-			"archive is briefly read-only for a maintenance pass; retry shortly",
+			"archive is read-only during maintenance or rebuilding; retry after it finishes",
 		),
 		http.Header{"Retry-After": []string{writerClosedRetryAfterSeconds}},
 	)

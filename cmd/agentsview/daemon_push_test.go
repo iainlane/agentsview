@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/doordash-oss/oapi-codegen-dd/v3/pkg/runtime"
@@ -14,9 +17,112 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/apiclient"
+	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/storage"
 )
+
+func TestCLIWriteWaitsForStartupRebuild(t *testing.T) {
+	for _, command := range []string{"full", "remote", "replica"} {
+		outcomes := []string{"success"}
+		if command == "full" {
+			outcomes = append(outcomes, "cancel", "failed rebuild", "current", "transport failure")
+		}
+		for _, outcome := range outcomes {
+			t.Run(command+"/"+outcome, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var warned atomic.Bool
+				ctx, _ = apiclient.TrackArchiveFreshness(ctx, func() { warned.Store(true) })
+				entered := make(chan struct{})
+				release := make(chan struct{})
+				defer close(release)
+				var writes atomic.Int32
+				write := func(w http.ResponseWriter, _ *http.Request) {
+					writes.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{}`))
+				}
+				ts := daemonRouteTestServer(t, map[string]http.HandlerFunc{
+					"/api/v1/sync/status": func(w http.ResponseWriter, _ *http.Request) {
+						w.Header().Set(apiclient.ArchiveStaleHeader, "true")
+						w.Header().Set("Content-Type", "application/json")
+						if outcome == "transport failure" {
+							w.WriteHeader(http.StatusServiceUnavailable)
+							return
+						}
+						_, _ = fmt.Fprintf(w, `{"archive_stale":%t}`, outcome != "current")
+					},
+					"/api/v1/sync": func(w http.ResponseWriter, r *http.Request) {
+						w.Header().Set(apiclient.ArchiveStaleHeader, "true")
+						assert.Equal(t, "true", r.URL.Query().Get("wait"))
+						assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
+						w.Header().Set("Content-Type", "text/event-stream")
+						w.(http.Flusher).Flush()
+						close(entered)
+						select {
+						case <-r.Context().Done():
+							return
+						case <-release:
+						}
+						if outcome == "failed rebuild" {
+							_, _ = w.Write([]byte("event: error\ndata: {\"resync_required\":true}\n\n"))
+						} else {
+							_, _ = w.Write([]byte("event: done\ndata: {}\n\n"))
+						}
+					},
+					"/api/v1/resync":       write,
+					"/api/v1/sync/remotes": write,
+					"/api/v1/push/pg":      write,
+				})
+				cfg := config.Config{DataDir: daemonRuntimeDir(t)}
+				registerSyncRouteTestRuntime(t, cfg.DataDir, ts.URL)
+				done := make(chan error, 1)
+				go func() {
+					var err error
+					tr := transport{Mode: transportHTTP, URL: ts.URL}
+					switch command {
+					case "full":
+						_, err = runDaemonSync(ctx, tr, "", true, nil)
+					case "remote":
+						_, err = runDaemonRemoteSync(ctx, tr, "", nil, false, true, nil)
+					default:
+						var backend archiveWriteBackend
+						var cleanup func()
+						backend, cleanup, err = resolveArchiveWriteBackend(ctx, cfg, transportIntentArchiveWrite)
+						if err == nil {
+							defer cleanup()
+							_, err = backend.ReplicaPush(ctx, pgReplica{}, storage.ConfiguredReplica{}, ReplicaPushConfig{}, nil, nil)
+						}
+					}
+					done <- err
+				}()
+				if outcome != "current" && outcome != "transport failure" {
+					<-entered
+					assert.Zero(t, writes.Load(), "writes must wait for the startup attempt")
+					if outcome == "cancel" {
+						cancel()
+					} else {
+						release <- struct{}{}
+					}
+				}
+				err := <-done
+				assert.False(t, warned.Load(), "startup probes must not report stale command output")
+				switch outcome {
+				case "cancel":
+					require.ErrorIs(t, err, context.Canceled)
+					assert.Zero(t, writes.Load())
+				case "transport failure":
+					require.ErrorContains(t, err, "503")
+					assert.Zero(t, writes.Load())
+				default:
+					require.NoError(t, err)
+					assert.EqualValues(t, 1, writes.Load())
+				}
+			})
+		}
+	}
+}
 
 func TestParseDaemonPushSSE(t *testing.T) {
 	stream := func(events ...string) string {

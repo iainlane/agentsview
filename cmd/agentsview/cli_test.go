@@ -5,13 +5,18 @@ import (
 	"database/sql"
 	"encoding/json/v2"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/agentsview/internal/apiclient"
 	"go.kenn.io/agentsview/internal/db"
 	"go.yaml.in/yaml/v3"
 )
@@ -410,4 +415,55 @@ func TestSyncHelpHostFlagDescribesConfiguredHTTPHost(t *testing.T) {
 	help, err := executeCommand(newRootCommand(), "sync", "--help")
 	require.NoError(t, err, "Execute")
 	assert.Contains(t, help, "Configured HTTP host name")
+}
+
+func TestCLIArchiveFreshnessWarning(t *testing.T) {
+	var stale atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if stale.Load() {
+			w.Header().Set("X-Agentsview-Archive-Stale", "true")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"sessions":[],"machine_labels":{}}`))
+	}))
+	defer ts.Close()
+	for _, value := range []bool{true, false} {
+		stale.Store(value)
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, executeCLIWithLegacyFlagCompat([]string{"session", "list", "--server", ts.URL, "--format", "json"}, &stdout, &stderr))
+		assert.Equal(t, value, strings.Contains(stderr.String(), "Archive results may be stale."))
+		var document map[string]any
+		require.NoError(t, json.Unmarshal(stdout.Bytes(), &document))
+		assert.NotContains(t, document, "stale")
+	}
+}
+
+func TestServerCommandContextSkipsCLIArchiveFreshnessWarning(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(apiclient.ArchiveStaleHeader, "true")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"archive_stale":true,"last_sync":"","stats":{}}`))
+	}))
+	defer ts.Close()
+	for _, tc := range []struct {
+		name   string
+		server bool
+		warned bool
+	}{
+		{name: "client command", server: false, warned: true},
+		{name: "server command", server: true, warned: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var warned atomic.Bool
+			ctx, _ := apiclient.TrackArchiveFreshness(t.Context(), func() { warned.Store(true) })
+			if tc.server {
+				ctx = serverCommandContext(ctx)
+			}
+			api, err := apiclient.NewHTTPClient(ts.URL, "", ts.Client())
+			require.NoError(t, err)
+			_, err = api.GetAPIV1SyncStatusWithResponse(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, tc.warned, warned.Load())
+		})
+	}
 }

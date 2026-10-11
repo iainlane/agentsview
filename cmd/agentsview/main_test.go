@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,17 +170,18 @@ func TestServeCommandMountsWritableServerAtBasePath(t *testing.T) {
 			"AGENTSVIEW_RUN_SERVE_BASE_PATH=/av",
 			"AGENTSVIEW_DATA_DIR=" + dataDir,
 		},
-		"base path runtime record reached",
+		"base path runtime record reached", 30*time.Second,
 	)
 	require.NoError(t, err, string(out))
 	assert.Contains(t, string(out), "base path runtime record reached")
 }
 
-func TestServeSkipInitialSyncStillReparsesStaleArchive(t *testing.T) {
+func TestServeSkipInitialSyncServesWhileReparsingStaleArchive(t *testing.T) {
 	cfg := testConfigWithClaudeFixture(t)
 	cfg.Host = "127.0.0.1"
 	database, err := db.Open(t.Context(), cfg.DBPath)
 	require.NoError(t, err)
+	dbtest.SeedSessionWithMessages(t, database, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")})
 	require.NoError(t, database.Close())
 	markArchiveStale(t, cfg.DBPath)
 	data, err := json.Marshal(cfg)
@@ -187,12 +189,14 @@ func TestServeSkipInitialSyncStillReparsesStaleArchive(t *testing.T) {
 	out, err := runRuntimeWarningHelperProcess(t, "serve", "TestServeStaleArchiveHelperProcess",
 		[]string{
 			"AGENTSVIEW_STALE_SERVE_CONFIG=" + string(data),
+			"AGENTSVIEW_STALE_SERVE_EXPECT_REBUILD=1",
 			"AGENTSVIEW_STALE_SERVE_SOURCES=" + cfg.AgentDirs[parser.AgentClaude][0],
-		}, "listening at")
+		}, "archive rebuild complete", 2*time.Minute)
 	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "old archive readable before startup rebuild")
 	stale, err := db.ArchiveNeedsResync(t.Context(), cfg.DBPath)
 	require.NoError(t, err)
-	assert.False(t, stale, "a direct serve must complete required reparse before publishing readiness")
+	assert.False(t, stale, "the required reparse must eventually install its replacement")
 }
 
 func TestServeStaleArchiveHelperProcess(t *testing.T) {
@@ -206,7 +210,83 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 	cfg.AgentDirs = map[parser.AgentType][]string{
 		parser.AgentClaude: {os.Getenv("AGENTSVIEW_STALE_SERVE_SOURCES")},
 	}
-	runServe(t.Context(), cfg, serveOptions{SkipInitialSync: true}, 0)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	failures := make(chan error, 1)
+	var pollDone chan struct{}
+	fail := func(err error) (string, error) {
+		failures <- err
+		cancel()
+		return "", err
+	}
+	original := writeDaemonRuntimeWithAuthAndNoSync
+	writeDaemonRuntimeWithAuthAndNoSync = func(
+		dataDir, host string, port int, version, browserURL string, readOnly,
+		requireAuth, noSync bool, explicitPort *int, caddyPID ...int,
+	) (string, error) {
+		if os.Getenv("AGENTSVIEW_STALE_SERVE_EXPECT_REBUILD") != "1" {
+			return original(dataDir, host, port, version, browserURL, readOnly, requireAuth, noSync, explicitPort, caddyPID...)
+		}
+		base := fmt.Sprintf("http://%s:%d", host, port)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/sessions/retained/messages", nil)
+		if err != nil {
+			return fail(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return fail(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK ||
+			resp.Header.Get("X-Agentsview-Archive-Stale") != "true" {
+			return fail(fmt.Errorf("retained archive read: status=%d stale=%q", resp.StatusCode, resp.Header.Get("X-Agentsview-Archive-Stale")))
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fail(err)
+		}
+		if !strings.Contains(string(body), "retained transcript") {
+			return fail(fmt.Errorf("retained transcript missing from messages: %s", body))
+		}
+		fmt.Println("old archive readable before startup rebuild")
+		pollDone = make(chan struct{})
+		go func() {
+			defer close(pollDone)
+			if !assert.Eventually(t, func() bool {
+				if ctx.Err() != nil {
+					return true
+				}
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/sync/status", nil)
+				if err != nil {
+					return false
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					return false
+				}
+				defer resp.Body.Close()
+				return resp.Header.Get("X-Agentsview-Archive-Stale") == ""
+			}, 90*time.Second, 10*time.Millisecond) {
+				_, _ = fail(errors.New("archive rebuild did not finish"))
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			fmt.Println("archive rebuild complete")
+		}()
+		return original(dataDir, host, port, version, browserURL, readOnly, requireAuth, noSync, explicitPort, caddyPID...)
+	}
+	runServe(ctx, cfg, serveOptions{SkipInitialSync: true}, 0)
+	cancel()
+	if pollDone != nil {
+		<-pollDone
+	}
+	select {
+	case err := <-failures:
+		require.NoError(t, err)
+	default:
+	}
 }
 
 func TestPGServeRuntimeRecordWriteFailureWarnsVisible(t *testing.T) {
@@ -233,15 +313,15 @@ func runServeRuntimeWarningHelper(
 			"AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_FAIL=" + strconv.FormatBool(failWrite),
 			"AGENTSVIEW_DATA_DIR=" + dataDir,
 		},
-		marker,
+		marker, 30*time.Second,
 	)
 }
 
 func runRuntimeWarningHelperProcess(
-	t *testing.T, helperName, testName string, env []string, marker string,
+	t *testing.T, helperName, testName string, env []string, marker string, timeout time.Duration,
 ) ([]byte, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+testName+"$")
 	cmd.Env = append(os.Environ(), env...)
@@ -399,7 +479,7 @@ func runPGRuntimeWarningHelper(t *testing.T) ([]byte, error) {
 			"AGENTSVIEW_RUN_PG_RUNTIME_WARNING_HELPER=1",
 			"AGENTSVIEW_DATA_DIR=" + dataDir,
 		},
-		"could not write daemon runtime record",
+		"could not write daemon runtime record", 30*time.Second,
 	)
 }
 

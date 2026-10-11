@@ -10,6 +10,7 @@ describe("StatusBar", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-08T05:00:00Z"));
+    sync.archiveStale = false;
     sync.syncing = false;
     sync.progress = null;
     sync.lastSync = "2026-04-08T05:00:00Z";
@@ -33,6 +34,59 @@ describe("StatusBar", () => {
     sync.backendDegradedMessage = null;
     sync.progress = null;
     sync.syncing = false;
+    sync.archiveStale = false;
+  });
+
+  it("shows stale results guidance until the archive is current", async () => {
+    sync.archiveStale = true;
+    const component = mount(StatusBar, { target: document.body });
+    await tick();
+    expect(document.body.textContent).toContain("Archive results may be stale.");
+    sync.archiveStale = false;
+    await tick();
+    expect(document.body.textContent).not.toContain("Archive results may be stale.");
+    await unmount(component);
+  });
+
+  it.each([
+    {
+      name: "after a version mismatch and before the server version",
+      versionMismatch: true,
+      withVersion: true,
+      want: "Perf · version mismatch - reload · Archive results may be stale. · v1.2.3",
+    },
+    {
+      name: "before the server version",
+      versionMismatch: false,
+      withVersion: true,
+      want: "Perf · Archive results may be stale. · v1.2.3",
+    },
+    {
+      name: "as the last item",
+      versionMismatch: false,
+      withVersion: false,
+      want: "Perf · Archive results may be stale.",
+    },
+  ])("separates the stale warning $name", async ({ versionMismatch, withVersion, want }) => {
+    sync.archiveStale = true;
+    sync.lastSync = null;
+    sync.versionMismatch = versionMismatch;
+    if (withVersion) {
+      sync.serverVersion = {
+        api_version: 1,
+        build_date: "",
+        commit: "abc",
+        data_version: 1,
+        insight_generation_available: false,
+        session_stats_available: false,
+        version: "v1.2.3",
+      };
+    }
+    const component = mount(StatusBar, { target: document.body });
+    await tick();
+    const right = document.querySelector(".kit-status-bar__section--right");
+    expect(right?.textContent?.replace(/\s+/g, " ").trim()).toBe(want);
+    await unmount(component);
   });
 
   it("refreshes the sync label as time passes", async () => {
