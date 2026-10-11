@@ -266,8 +266,10 @@ func (s *Server) humaTriggerSync(
 			return nil, err
 		}
 	}
-	if err := s.rejectStaleArchiveForSync(); err != nil {
-		return nil, err
+	if s.localSyncRunner != nil {
+		if err := s.rejectStaleArchiveForSync(); err != nil {
+			return nil, err
+		}
 	}
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
 		stream, ok := newHumaSSEStream(hctx)
@@ -331,16 +333,8 @@ func (s *Server) runSyncWhenReady(
 // error. The body remains the human-readable explanation.
 const ResyncRequiredHeader = "X-Agentsview-Resync-Required"
 
-// rejectStaleArchiveForSync fails a worker-backed /sync when the archive's data
-// version changed, because the worker sync pass refuses to swap a stale archive
-// under the live daemon. It points the caller at /resync, which rebuilds through
-// the resync-build flow; it deliberately does not auto-trigger a resync. The
-// in-process path (no worker runner) safely resyncs a stale archive itself, so
-// the gate only applies when the worker-backed runner is wired.
+// rejectStaleArchiveForSync directs stale archives to an explicit resync.
 func (s *Server) rejectStaleArchiveForSync() error {
-	if s.localSyncRunner == nil {
-		return nil
-	}
 	local, ok := s.db.(*db.DB)
 	if !ok || !local.NeedsResync() {
 		return nil
@@ -1066,15 +1060,6 @@ func (s *Server) humaSyncSession(
 	if err := s.rejectStaleArchiveForSync(); err != nil {
 		return nil, err
 	}
-	if err := s.resyncBeforeSessionSync(ctx); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, nil
-		}
-		if handled := handleHumaContextError(err); handled != nil {
-			return nil, handled
-		}
-		return nil, apiError(http.StatusInternalServerError, err.Error())
-	}
 	detail, err := s.sessionSyncService(ctx).Sync(ctx, in.Body)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1093,19 +1078,4 @@ func (s *Server) humaSyncSession(
 		return nil, apiError(http.StatusInternalServerError, err.Error())
 	}
 	return &jsonOutput[*service.SessionDetail]{Body: detail}, nil
-}
-
-func (s *Server) resyncBeforeSessionSync(ctx context.Context) error {
-	local, ok := s.db.(*db.DB)
-	if !ok || !local.NeedsResync() {
-		return nil
-	}
-	engine, err := s.syncEngineForRequest(ctx)
-	if err != nil {
-		return err
-	}
-	if _, err := s.runResyncWithFallback(ctx, engine, nil); err != nil {
-		return err
-	}
-	return ctx.Err()
 }

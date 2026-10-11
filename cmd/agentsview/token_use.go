@@ -251,6 +251,7 @@ func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
 		archiveQueryPolicy{
 			AutoStart:            true,
 			SkipInitialSync:      true,
+			WaitForStartedDaemon: true,
 			ReadOnlyDaemon:       archiveQueryUseReadOnlyDaemon,
 			DirectReadOnlyAction: "refresh session usage directly",
 		},
