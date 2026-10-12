@@ -62,7 +62,6 @@ Add to your MCP client config (e.g. Claude Desktop):
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cmd.SetContext(serverCommandContext(cmd.Context()))
 			if err := applyMemoryTargetEnv(cmd, profileName); err != nil {
 				return err
 			}

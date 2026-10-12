@@ -152,6 +152,7 @@ func newClient(cfg Config, scopes []string) (*Client, error) {
 		enforced.CheckRedirect = refuseRedirects
 		httpClient = &enforced
 	}
+	httpClient = apiclient.NewArchiveHTTPClient(httpClient)
 	chunkBytes := cfg.ChunkBytes
 	if chunkBytes <= 0 {
 		chunkBytes = defaultChunkBytes
@@ -220,7 +221,7 @@ func (c *Client) request[T any](operation func(*apiclient.Client) (T, error), to
 type rawHTTPTransport struct{ *http.Client }
 
 func (t rawHTTPTransport) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	resp, err := apiclient.Do(ctx, t.Client, req)
+	resp, err := t.Client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, err
 	}

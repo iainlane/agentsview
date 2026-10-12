@@ -33,7 +33,7 @@ func (s *Server) humaInitializeConversationExport(
 	}
 	initialized, err := local.EnsureConversationExportInitialized(ctx)
 	if err != nil {
-		if handled := s.handleHumaReadOnly(err); handled != nil {
+		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("initialize conversation export", err)

@@ -2,9 +2,12 @@ package apiclient
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,13 +17,13 @@ import (
 )
 
 // NewHTTPClient connects the generated API to the selected daemon transport.
-func NewHTTPClient(baseURL, token string, client *http.Client) (*Client, error) {
+func NewHTTPClient(baseURL, token string, client *http.Client, options ...ArchiveOption) (*Client, error) {
 	origin, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, err
 	}
 	origin.Path, origin.RawPath, origin.RawQuery, origin.Fragment = "", "", "", ""
-	return NewDefaultClient(strings.TrimSuffix(baseURL, "/"), runtime.WithHTTPClient(httpTransport{client}), runtime.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
+	return NewDefaultClient(strings.TrimSuffix(baseURL, "/"), runtime.WithHTTPClient(httpTransport{NewArchiveHTTPClient(client, options...)}), runtime.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -34,13 +37,12 @@ func NewHTTPClient(baseURL, token string, client *http.Client) (*Client, error) 
 type httpTransport struct{ *http.Client }
 
 func (c httpTransport) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	return Do(ctx, c.Client, req)
+	return c.Client.Do(req.WithContext(ctx))
 }
 
 const (
-	ArchiveRebuildingHeader = "X-Agentsview-Archive-Rebuilding"
-	ArchiveStaleHeader      = "X-Agentsview-Archive-Stale"
-	ArchiveStaleWarning     = "Archive results may be stale."
+	ArchiveStaleHeader  = "X-Agentsview-Archive-Stale"
+	ArchiveStaleWarning = "Archive results may be stale."
 )
 
 type archiveFreshnessKey struct{}
@@ -66,41 +68,71 @@ func ObserveArchiveFreshness(ctx context.Context, response *http.Response) {
 	}
 }
 
-type archiveRebuildNoticeKey struct{}
+// ArchiveOption enables archive notices for an HTTP client.
+type ArchiveOption func(*archiveTransport)
 
-// WithArchiveRebuildNotice lets a caller report its first rebuild retry.
-func WithArchiveRebuildNotice(ctx context.Context, notice func()) context.Context {
-	return context.WithValue(ctx, archiveRebuildNoticeKey{}, notice)
+// WithArchiveNotices prints each notice once across clients sharing this option.
+func WithArchiveNotices(writer io.Writer) ArchiveOption {
+	var waiting, stale sync.Once
+	return func(transport *archiveTransport) {
+		transport.onWait = func() { waiting.Do(func() { fmt.Fprintln(writer, "waiting for archive rebuild") }) }
+		transport.onStale = func() { stale.Do(func() { fmt.Fprintln(writer, "Warning: "+ArchiveStaleWarning) }) }
+	}
 }
 
-// Do retries writes refused while the startup rebuild has closed the writer.
-func Do(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
-	req = req.WithContext(ctx)
-	waiting := false
+// NewArchiveHTTPClient copies the client and installs archive retry handling.
+func NewArchiveHTTPClient(client *http.Client, options ...ArchiveOption) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	copy := *client
+	base := copy.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if _, installed := base.(*archiveTransport); installed && len(options) == 0 {
+		return &copy
+	}
+	transport := &archiveTransport{base: base}
+	for _, option := range options {
+		option(transport)
+	}
+	copy.Transport = transport
+	return &copy
+}
+
+type archiveTransport struct {
+	base            http.RoundTripper
+	onWait, onStale func()
+}
+
+func (t *archiveTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	for {
-		response, err := client.Do(req)
-		if err != nil || response.StatusCode != http.StatusServiceUnavailable || response.Header.Get(ArchiveRebuildingHeader) != "true" || (req.Body != nil && req.Body != http.NoBody && req.GetBody == nil) {
-			ObserveArchiveFreshness(ctx, response)
+		response, err := t.base.RoundTrip(req)
+		if err != nil {
 			return response, err
 		}
+		ObserveArchiveFreshness(req.Context(), response)
+		if response.StatusCode >= 200 && response.StatusCode < 300 && response.Header.Get(ArchiveStaleHeader) == "true" && t.onStale != nil {
+			t.onStale()
+		}
 		delay := httputil.ParseRetryAfter(response.Header.Get("Retry-After"))
-		if delay <= 0 {
-			delay = time.Second
+		if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get(ArchiveStaleHeader) != "true" || delay <= 0 || req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+			return response, nil
 		}
 		response.Body.Close()
-		if !waiting {
-			if notice, ok := ctx.Value(archiveRebuildNoticeKey{}).(func()); ok && notice != nil {
-				notice()
-			}
-			waiting = true
+		if t.onWait != nil {
+			t.onWait()
 		}
 		timer := time.NewTimer(delay)
 		select {
-		case <-ctx.Done():
+		case <-req.Context().Done():
 			timer.Stop()
-			return nil, ctx.Err()
+			return nil, req.Context().Err()
 		case <-timer.C:
 		}
+		req = req.Clone(req.Context())
+		req.Header.Set(ArchiveStaleHeader, "true")
 		if req.GetBody != nil {
 			req.Body, err = req.GetBody()
 			if err != nil {

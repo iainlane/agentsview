@@ -1,7 +1,9 @@
 package apiclient
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -19,22 +21,24 @@ func (f retryTransport) RoundTrip(req *http.Request) (*http.Response, error) { r
 
 func TestArchiveRebuildRetry(t *testing.T) {
 	for _, tc := range []struct {
-		name                           string
-		header, replay, cancel, notice bool
-		wantCalls                      int
+		name                                       string
+		header, retryAfter, replay, cancel, notice bool
+		wantCalls                                  int
 	}{
-		{"replays body after two rebuild responses", true, true, false, true, 3},
-		{"library retry without notice", true, true, false, false, 3},
-		{"ordinary 503", false, true, false, true, 1},
-		{"body cannot be replayed", true, false, false, true, 1},
-		{"cancel while waiting", true, true, true, true, 1},
+		{"replays body after two rebuild responses", true, true, true, false, true, 3},
+		{"library retry without notice", true, true, true, false, false, 3},
+		{"missing retry hint", true, false, true, false, true, 1},
+		{"ordinary 503", false, true, true, false, true, 1},
+		{"body cannot be replayed", true, true, false, false, true, 1},
+		{"cancel while waiting", true, true, true, true, true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
-				notices := 0
+				var notices bytes.Buffer
+				var options []ArchiveOption
 				if tc.notice {
-					ctx = WithArchiveRebuildNotice(ctx, func() { notices++ })
+					options = append(options, WithArchiveNotices(&notices))
 				}
 				defer cancel()
 				calls := 0
@@ -51,9 +55,12 @@ func TestArchiveRebuildRetry(t *testing.T) {
 					if calls == 3 {
 						status = http.StatusOK
 					}
-					header := http.Header{"Retry-After": []string{"2"}}
+					header := http.Header{}
+					if tc.retryAfter {
+						header.Set("Retry-After", "2")
+					}
 					if tc.header {
-						header.Set(ArchiveRebuildingHeader, "true")
+						header.Set(ArchiveStaleHeader, "true")
 					}
 					if tc.cancel {
 						go func() { time.Sleep(time.Second); cancel() }()
@@ -65,13 +72,13 @@ func TestArchiveRebuildRetry(t *testing.T) {
 				if !tc.replay {
 					req.GetBody = nil
 				}
-				response, err := Do(ctx, client, req)
+				response, err := NewArchiveHTTPClient(client, options...).Do(req.WithContext(ctx))
 				assert.Equal(t, tc.wantCalls, calls)
 				wantNotices := 0
-				if tc.header && tc.replay && tc.notice {
+				if tc.header && tc.retryAfter && tc.replay && tc.notice {
 					wantNotices = 1
 				}
-				assert.Equal(t, wantNotices, notices)
+				assert.Equal(t, wantNotices, strings.Count(notices.String(), "waiting for archive rebuild"))
 				if tc.cancel {
 					require.ErrorIs(t, err, context.Canceled)
 					assert.Nil(t, response)
@@ -88,6 +95,41 @@ func TestArchiveRebuildRetry(t *testing.T) {
 				body, err := io.ReadAll(response.Body)
 				require.NoError(t, err)
 				assert.Equal(t, "result", string(body))
+			})
+		})
+	}
+}
+
+func TestArchiveNotices(t *testing.T) {
+	for _, notice := range []bool{false, true} {
+		t.Run(fmt.Sprint(notice), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var output bytes.Buffer
+				var options []ArchiveOption
+				if notice {
+					options = append(options, WithArchiveNotices(&output))
+				}
+				calls := 0
+				httpClient := &http.Client{Transport: retryTransport(func(*http.Request) (*http.Response, error) {
+					calls++
+					status := http.StatusOK
+					if calls%2 == 1 {
+						status = http.StatusServiceUnavailable
+					}
+					return &http.Response{StatusCode: status, Header: http.Header{ArchiveStaleHeader: {"true"}, "Retry-After": {"1"}}, Body: io.NopCloser(strings.NewReader(`{"sessions":[],"machine_labels":{}}`))}, nil
+				})}
+				for range 2 {
+					api, err := NewHTTPClient("http://example.test", "", httpClient, options...)
+					require.NoError(t, err)
+					_, err = api.GetAPIV1SessionsWithResponse(t.Context(), &GetAPIV1SessionsRequestOptions{})
+					require.NoError(t, err)
+				}
+				assert.Equal(t, 4, calls)
+				if notice {
+					assert.Equal(t, "waiting for archive rebuild\nWarning: Archive results may be stale.\n", output.String())
+				} else {
+					assert.Empty(t, output.String())
+				}
 			})
 		})
 	}

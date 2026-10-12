@@ -760,20 +760,30 @@ func TestDataCompactEndpointRejectsClientStagingDir(t *testing.T) {
 }
 
 func TestDataCompactEndpointMapsBusyBarrierToConflict(t *testing.T) {
-	for name, busy := range map[string]error{
-		"sync in progress":    syncpkg.ErrSyncInProgress,
-		"compact in progress": db.ErrCompactInProgress,
+	for _, tc := range []struct {
+		name        string
+		busy        error
+		closeWriter bool
+		status      int
+	}{
+		{"sync in progress", syncpkg.ErrSyncInProgress, false, http.StatusConflict},
+		{"compact in progress", db.ErrCompactInProgress, false, http.StatusConflict},
+		{"barrier closes after request begins", syncpkg.ErrSyncInProgress, true, http.StatusServiceUnavailable},
 	} {
-		t.Run(name, func(t *testing.T) {
-			te := setupWithServerOpts(t, []server.Option{
-				server.WithLocalCompactRunner(func(
-					context.Context, db.CompactOptions,
-				) (db.CompactResult, error) {
-					return db.CompactResult{}, busy
-				}),
-			})
+		t.Run(tc.name, func(t *testing.T) {
+			var database *db.DB
+			te := setupWithServerOpts(t, []server.Option{server.WithLocalCompactRunner(func(context.Context, db.CompactOptions) (db.CompactResult, error) {
+				if tc.closeWriter {
+					require.NoError(t, database.CloseWriter())
+				}
+				return db.CompactResult{}, tc.busy
+			})})
+			database = te.db
 			w := te.post(t, "/api/v1/data/compact", `{}`)
-			assertStatus(t, w, http.StatusConflict)
+			assertStatus(t, w, tc.status)
+			if tc.closeWriter {
+				assert.Equal(t, "5", w.Header().Get("Retry-After"))
+			}
 		})
 	}
 }

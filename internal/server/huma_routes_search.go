@@ -161,7 +161,7 @@ func (s *Server) humaSearchContent(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := s.handleHumaReadOnly(err); handled != nil {
+		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		if errors.Is(err, db.ErrSemanticTransient) {

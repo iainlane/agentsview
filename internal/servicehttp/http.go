@@ -102,8 +102,10 @@ type HTTPServerCapabilities struct {
 // on every request so the backend works against daemons running
 // with require_auth=true. browserURL selects the browser-facing address;
 // an empty value uses baseURL.
-func NewHTTPBackend(baseURL, token string, readOnly bool, browserURL string) service.SessionService {
+func NewHTTPBackend(baseURL, token string, readOnly bool, browserURL string, options ...apiclient.ArchiveOption) service.SessionService {
 	b := newHTTPBackend(baseURL, token, readOnly, !readOnly)
+	b.client = apiclient.NewArchiveHTTPClient(b.client, options...)
+	b.longRunningClient = apiclient.NewArchiveHTTPClient(b.longRunningClient, options...)
 	if browserURL != "" {
 		b.browserURL = browserURL
 	}

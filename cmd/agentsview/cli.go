@@ -195,7 +195,7 @@ func newServeCommandWithDaemonDeps(deps daemonCommandDeps) *cobra.Command {
 				)
 				return nil
 			}
-			runServe(serverCommandContext(cmd.Context()), mustLoadConfig(cmd), serveOptions{
+			runServe(cmd.Context(), mustLoadConfig(cmd), serveOptions{
 				ReplaceDaemon:   replace,
 				NoSyncExplicit:  cmd.Flags().Changed("no-sync"),
 				SkipInitialSync: skipInitialSync,
@@ -488,7 +488,7 @@ func newTokenUseCommand() *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			runTokenUse(cmd, args)
+			runTokenUse(args)
 		},
 	}
 }
@@ -533,7 +533,7 @@ func newProjectsCommand() *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			runProjects(cmd.Context(), outputFormat(cmd) == "json")
+			runProjects(outputFormat(cmd) == "json")
 		},
 	}
 	registerFormatFlags(cmd.Flags())
@@ -590,7 +590,6 @@ func newUsageDailyCommand() *cobra.Command {
 		Args:         cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg.JSON = outputFormat(cmd) == "json"
-			cfg.ctx = cmd.Context()
 			runUsageDaily(cfg)
 		},
 	}
@@ -615,7 +614,6 @@ func newUsageStatuslineCommand() *cobra.Command {
 		Args:         cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg.JSON = outputFormat(cmd) == "json"
-			cfg.ctx = cmd.Context()
 			runUsageStatusline(cfg)
 		},
 	}
@@ -650,7 +648,6 @@ func newActivityReportCommand() *cobra.Command {
 		Args:         cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg.JSON = outputFormat(cmd) == "json"
-			cfg.ctx = cmd.Context()
 			runActivityReport(cfg)
 		},
 	}

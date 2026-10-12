@@ -15,7 +15,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go.kenn.io/agentsview/internal/apiclient"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/postgres"
 	"go.kenn.io/agentsview/internal/servicehttp"
@@ -114,7 +113,6 @@ func newMemorySessionStartCommand() *cobra.Command {
 func runMemorySessionStartCommand(
 	cmd *cobra.Command, pluginRoot string,
 ) error {
-	cmd.SetContext(apiclient.WithArchiveRebuildNotice(cmd.Context(), nil))
 	if err := applyMemorySessionEnv(cmd); err != nil {
 		return err
 	}
@@ -409,7 +407,7 @@ func postMemoryRefresh(ctx context.Context, baseURL, token string) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := &http.Client{Timeout: memorySessionStartTimeout}
-	resp, err := apiclient.Do(ctx, client, req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("memory session-start: request refresh: %w", err)
 	}

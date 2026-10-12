@@ -17,8 +17,8 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
-	"go.kenn.io/agentsview/internal/apiclient"
 	"go.kenn.io/agentsview/internal/db"
+	syncpkg "go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/timeutil"
 )
 
@@ -105,19 +105,35 @@ func configureHuma() {
 			}
 		}
 		huma.NewErrorWithContext = func(
-			_ huma.Context,
+			ctx huma.Context,
 			status int,
 			message string,
 			errs ...error,
 		) huma.StatusError {
+			if status == http.StatusInternalServerError {
+				for _, err := range errs {
+					if errors.Is(err, db.ErrWriterClosed) {
+						closed := writerClosedError()
+						for key, values := range closed.(huma.HeadersError).GetHeaders() {
+							for _, value := range values {
+								ctx.AppendHeader(key, value)
+							}
+						}
+						var response huma.StatusError
+						errors.As(closed, &response)
+						return response
+					}
+				}
+			}
 			return huma.NewError(status, message, errs...)
 		}
 	})
 }
 
 type requestInfo struct {
-	RemoteAddr string
-	Forwarded  bool
+	RemoteAddr   string
+	Forwarded    bool
+	ArchiveRetry bool
 }
 
 //nolint:recvcheck // Huma discovers Schema on values and mutates parameters through pointers.
@@ -177,7 +193,8 @@ const ctxKeyHumaRequestInfo contextKey = 100
 
 func humaRequestInfoMiddleware(ctx huma.Context, next func(huma.Context)) {
 	info := requestInfo{
-		RemoteAddr: ctx.RemoteAddr(),
+		RemoteAddr:   ctx.RemoteAddr(),
+		ArchiveRetry: ctx.Header("X-Agentsview-Archive-Stale") == "true",
 		Forwarded: ctx.Header("X-Forwarded-For") != "" ||
 			ctx.Header("X-Real-IP") != "" ||
 			ctx.Header("Forwarded") != "",
@@ -488,29 +505,25 @@ const writerClosedRetryAfterSeconds = "5"
 // maintenance pass is a transient 503 with Retry-After so clients retry once the
 // barrier lifts. It returns nil for any other error. Read endpoints never
 // produce ErrWriterClosed, so folding it in here is safe for every call site.
-func (s *Server) handleHumaReadOnly(err error) error {
+func handleHumaReadOnly(err error) error {
 	if errors.Is(err, db.ErrReadOnly) {
 		return apiError(http.StatusNotImplemented, "not available in remote mode")
 	}
 	if errors.Is(err, db.ErrWriterClosed) {
-		return s.writerClosedError()
+		return writerClosedError()
 	}
 	return nil
 }
 
 // writerClosedError is the 503 + Retry-After response for a write rejected while
 // the archive writer is closed for a maintenance pass.
-func (s *Server) writerClosedError() error {
-	headers := http.Header{"Retry-After": []string{writerClosedRetryAfterSeconds}}
-	if s.startupRebuildPending() {
-		headers.Set(apiclient.ArchiveRebuildingHeader, "true")
-	}
+func writerClosedError() error {
 	return huma.ErrorWithHeaders(
 		apiError(
 			http.StatusServiceUnavailable,
-			"archive is read-only during maintenance or rebuilding; retry after it finishes",
+			"archive is briefly read-only for a maintenance pass; retry shortly",
 		),
-		headers,
+		http.Header{"Retry-After": []string{writerClosedRetryAfterSeconds}},
 	)
 }
 
@@ -520,7 +533,7 @@ func (s *Server) writerClosedError() error {
 // 500 (mirrors the push handlers' pre-stream gate).
 func (s *Server) rejectWriterClosedWrite() error {
 	if local, ok := s.db.(*db.DB); ok && local.WriterClosed() {
-		return s.writerClosedError()
+		return writerClosedError()
 	}
 	return nil
 }
@@ -555,6 +568,24 @@ func (s *Server) tryArchiveWrite(ctx context.Context, work func() error) error {
 	return work()
 }
 
+func (s *Server) archiveMaintenanceError(err error) error {
+	if !errors.Is(err, syncpkg.ErrSyncInProgress) && !errors.Is(err, db.ErrCompactInProgress) {
+		return nil
+	}
+	if closed := s.rejectWriterClosedWrite(); closed != nil {
+		return closed
+	}
+	return apiError(http.StatusConflict, "another archive maintenance operation is already running")
+}
+
+type handlerError struct {
+	message string
+	cause   error
+}
+
+func (e *handlerError) Error() string { return e.message }
+func (e *handlerError) Unwrap() error { return e.cause }
+
 func serverError(err error) error {
 	if handled := hostedIdentityHTTPError(err); handled != nil {
 		return handled
@@ -565,7 +596,7 @@ func serverError(err error) error {
 	if handled := handleHumaContextError(err); handled != nil {
 		return handled
 	}
-	return apiError(http.StatusInternalServerError, err.Error())
+	return &handlerError{message: err.Error(), cause: err}
 }
 
 func internalError(logPrefix string, err error) error {
@@ -581,7 +612,7 @@ func internalError(logPrefix string, err error) error {
 	if err != nil {
 		log.Printf("%s: %v", logPrefix, err)
 	}
-	return apiError(http.StatusInternalServerError, "internal error")
+	return &handlerError{message: "internal error", cause: err}
 }
 
 type idPathInput struct {

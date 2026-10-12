@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"go.kenn.io/agentsview/internal/apiclient"
+	"github.com/danielgtaylor/huma/v2"
+
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	recallextract "go.kenn.io/agentsview/internal/recall/extract"
@@ -29,18 +30,21 @@ func handleContextError(w http.ResponseWriter, err error) bool {
 	return false
 }
 
-func (s *Server) handleReadOnly(w http.ResponseWriter, err error) bool {
+func handleReadOnly(w http.ResponseWriter, err error) bool {
 	if errors.Is(err, db.ErrReadOnly) {
 		writeError(w, http.StatusNotImplemented, "not available in remote mode")
 		return true
 	}
 	if errors.Is(err, db.ErrWriterClosed) {
-		w.Header().Set("Retry-After", writerClosedRetryAfterSeconds)
-		if s.startupRebuildPending() {
-			w.Header().Set(apiclient.ArchiveRebuildingHeader, "true")
+		closed := writerClosedError()
+		for key, values := range closed.(huma.HeadersError).GetHeaders() {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
 		}
-		writeError(w, http.StatusServiceUnavailable,
-			"archive is read-only during maintenance or rebuilding; retry after it finishes")
+		var response huma.StatusError
+		errors.As(closed, &response)
+		writeError(w, response.GetStatus(), response.Error())
 		return true
 	}
 	return false
@@ -140,7 +144,7 @@ func (s *Server) handleListRecallEntries(
 		if handleInvalidRecallQuery(w, err) {
 			return
 		}
-		if s.handleReadOnly(w, err) {
+		if handleReadOnly(w, err) {
 			return
 		}
 		if errors.Is(err, errStaleRecallPagination) {
@@ -476,7 +480,7 @@ func (s *Server) handleRecallExtractionRetire(
 func (s *Server) handleRecallExtractionLifecycleError(
 	w http.ResponseWriter, err error,
 ) {
-	if handleContextError(w, err) || s.handleReadOnly(w, err) {
+	if handleContextError(w, err) || handleReadOnly(w, err) {
 		return
 	}
 	if errors.Is(err, db.ErrExtractActivationBlocked) ||
@@ -688,7 +692,7 @@ func (s *Server) handleGetRecallEntry(
 		if handleContextError(w, err) {
 			return
 		}
-		if s.handleReadOnly(w, err) {
+		if handleReadOnly(w, err) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -733,7 +737,7 @@ func (s *Server) handleQueryRecallEntries(
 		if handleInvalidRecallQuery(w, err) {
 			return
 		}
-		if s.handleReadOnly(w, err) {
+		if handleReadOnly(w, err) {
 			return
 		}
 		if errors.Is(err, db.ErrSemanticTransient) {
@@ -793,7 +797,7 @@ func (s *Server) handleImportRecallEntries(
 		if handleContextError(w, err) {
 			return
 		}
-		if s.handleReadOnly(w, err) {
+		if handleReadOnly(w, err) {
 			return
 		}
 		writeError(w, http.StatusBadRequest, err.Error())

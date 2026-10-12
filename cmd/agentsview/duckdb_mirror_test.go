@@ -44,7 +44,7 @@ func runDuckDBRuntimeWarningHelper(t *testing.T) ([]byte, error) {
 			"AGENTSVIEW_DATA_DIR=" + dataDir,
 			"AGENTSVIEW_DUCKDB_RUNTIME_WARNING_PATH=" + mirrorPath,
 		},
-		"could not write daemon runtime record", 30*time.Second,
+		"could not write daemon runtime record",
 	)
 }
 

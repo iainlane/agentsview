@@ -2,13 +2,11 @@ package server
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"go.kenn.io/agentsview/internal/db"
-	syncpkg "go.kenn.io/agentsview/internal/sync"
 
 	"github.com/danielgtaylor/huma/v2"
 )
@@ -114,7 +112,7 @@ func (s *Server) humaDataProjects(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := s.handleHumaReadOnly(err); handled != nil {
+		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("get project inventory error", err)
@@ -188,7 +186,7 @@ func (s *Server) humaDataProjectRules(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := s.handleHumaReadOnly(err); handled != nil {
+		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("list project rules error", err)
@@ -214,7 +212,7 @@ func (s *Server) humaDataCandidates(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := s.handleHumaReadOnly(err); handled != nil {
+		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("list archive-wide reclassification candidates error", err)
@@ -227,6 +225,9 @@ func (s *Server) humaDataCandidates(
 func (s *Server) humaDataCompact(
 	ctx context.Context, in *dataCompactInput,
 ) (*jsonOutput[db.CompactResult], error) {
+	if err := s.rejectWriterClosedWrite(); err != nil {
+		return nil, err
+	}
 	if !isLocalhostContext(ctx) {
 		return nil, apiError(
 			http.StatusForbidden,
@@ -255,17 +256,13 @@ func (s *Server) humaDataCompact(
 			return err
 		})
 	}
-	if errors.Is(err, syncpkg.ErrSyncInProgress) ||
-		errors.Is(err, db.ErrCompactInProgress) {
-		return nil, apiError(
-			http.StatusConflict,
-			"another archive maintenance operation is already running",
-		)
+	if busy := s.archiveMaintenanceError(err); busy != nil {
+		return nil, busy
 	}
 	if handled := handleHumaContextError(err); handled != nil {
 		return nil, handled
 	}
-	if handled := s.handleHumaReadOnly(err); handled != nil {
+	if handled := handleHumaReadOnly(err); handled != nil {
 		return nil, handled
 	}
 	if err != nil {
@@ -317,7 +314,7 @@ func (s *Server) humaDataStripImagesPreview(
 	if handled := handleHumaContextError(err); handled != nil {
 		return nil, handled
 	}
-	if handled := s.handleHumaReadOnly(err); handled != nil {
+	if handled := handleHumaReadOnly(err); handled != nil {
 		return nil, handled
 	}
 	if err != nil {
@@ -353,17 +350,13 @@ func (s *Server) humaDataStripImages(
 		}
 		return stripErr
 	})
-	if errors.Is(err, syncpkg.ErrSyncInProgress) ||
-		errors.Is(err, db.ErrCompactInProgress) {
-		return nil, apiError(
-			http.StatusConflict,
-			"another archive maintenance operation is already running",
-		)
+	if busy := s.archiveMaintenanceError(err); busy != nil {
+		return nil, busy
 	}
 	if handled := handleHumaContextError(err); handled != nil {
 		return nil, handled
 	}
-	if handled := s.handleHumaReadOnly(err); handled != nil {
+	if handled := handleHumaReadOnly(err); handled != nil {
 		return nil, handled
 	}
 	if err != nil {

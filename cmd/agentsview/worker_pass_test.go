@@ -527,9 +527,8 @@ func TestRunWorkerResyncBuildHonorsRequiredOnly(t *testing.T) {
 }
 
 func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
-	for _, outcome := range []string{"failed", "aborted"} {
+	for _, outcome := range []string{"failed", "aborted", "unlaunchable"} {
 		t.Run(outcome, func(t *testing.T) {
-			logs := captureLogOutput(t)
 			cfg := testConfigWithClaudeFixture(t)
 			cfg.Host = "127.0.0.1"
 			seed, err := db.Open(t.Context(), cfg.DBPath)
@@ -583,6 +582,9 @@ func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
 				}})
 				close(progressSeen)
 				<-release
+				if outcome == "unlaunchable" {
+					return workerResult{}, errWorkerSpawn
+				}
 				return workerResult{Status: outcome}, sentinel
 			})
 			defer restore()
@@ -592,13 +594,8 @@ func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
 			}
 			done := make(chan buildResult, 1)
 			go func() {
-				var result buildResult
-				runStartupArchiveRebuild(t.Context(), engine, func(ctx context.Context, progress func(sync.Progress)) (sync.SyncStats, error) {
-					worker, err, spawnFailed := runWorkerResyncBuild(ctx, t.Context(), cfg, engine, database, progress, true)
-					result = buildResult{err: err, spawnFailed: spawnFailed}
-					return statsFromWorkerResult(worker), err
-				})
-				done <- result
+				_, err, spawnFailed := runWorkerResyncBuild(t.Context(), t.Context(), cfg, engine, database, nil, false, func() {})
+				done <- buildResult{err: err, spawnFailed: spawnFailed}
 			}()
 			select {
 			case <-workerStarted:
@@ -631,16 +628,21 @@ func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
 
 			release <- struct{}{}
 			result := <-done
-			require.ErrorIs(t, result.err, sentinel)
-			assert.False(t, result.spawnFailed)
+			if outcome == "unlaunchable" {
+				require.ErrorIs(t, result.err, errWorkerSpawn)
+				assert.True(t, result.spawnFailed)
+			} else {
+				require.ErrorIs(t, result.err, sentinel)
+				assert.False(t, result.spawnFailed)
+			}
 			_, active = engine.CurrentProgress()
 			assert.False(t, active,
 				"completed resync worker must clear daemon-visible progress")
 			readRetained()
 			assert.False(t, database.WriterClosed())
-			assert.True(t, engine.StartupAttemptCompleted())
+			requireStartupMaintenanceReleased(t, engine)
 			assert.False(t, engine.StartupReconciled())
-			assert.Contains(t, logs.String(), "startup archive rebuild: resync worker stopped")
+
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0/api/v1/sync/status", nil))
 			assert.Contains(t, w.Body.String(), `"archive_stale":true`)

@@ -279,7 +279,7 @@ func doInsightRequest(
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := apiclient.Do(ctx, &http.Client{Timeout: 0}, req)
+	resp, err := apiclient.NewArchiveHTTPClient(&http.Client{Timeout: 0}, cliArchiveNotices).Do(req)
 	if err != nil {
 		return nil, err
 	}

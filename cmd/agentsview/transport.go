@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+
+	"go.kenn.io/agentsview/internal/apiclient"
 	"net/url"
 	"os"
 	"strconv"
@@ -548,7 +551,7 @@ func newService(ctx context.Context,
 ) (service.SessionService, func(), error) {
 	switch tr.Mode {
 	case transportHTTP:
-		return servicehttp.NewHTTPBackend(tr.URL, cfg.AuthToken, tr.ReadOnly, tr.BrowserURL),
+		return newDaemonHTTPBackend(tr.URL, cfg.AuthToken, tr.ReadOnly, tr.BrowserURL),
 			func() {}, nil
 	default:
 		if err := directIncompatibleDaemonError(tr); err != nil {
@@ -620,4 +623,14 @@ func newPGReadService(
 	}
 	wireReplicaReadVectorSearchFn(cfg, pgReplica{}, store)
 	return service.NewReadOnlyBackend(store), cleanup, nil
+}
+
+var cliArchiveNotices = apiclient.WithArchiveNotices(os.Stderr)
+
+func newDaemonAPIClient(baseURL, token string, client *http.Client) (*apiclient.Client, error) {
+	return apiclient.NewHTTPClient(baseURL, token, client, cliArchiveNotices)
+}
+
+func newDaemonHTTPBackend(baseURL, token string, readOnly bool, browserURL string) service.SessionService {
+	return servicehttp.NewHTTPBackend(baseURL, token, readOnly, browserURL, cliArchiveNotices)
 }

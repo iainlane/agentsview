@@ -420,25 +420,15 @@ agentsview serve --base-path /agentsview --public-url https://example.com
 On startup, the server:
 
 1. Loads or creates `~/.agentsview/sessions.db`
-1. Runs initial sync across all discovered session directories, or serves the
-    existing archive while a full parser-version rebuild runs in the background
+1. Runs initial sync across all discovered session directories
 1. Starts the file watcher (500ms event batching; watcher sync starts remain at
     least five seconds apart)
 1. Starts periodic sync (every 15 minutes)
 1. Serves the Svelte SPA and REST API
 
-Only full parser-version rebuilds run while the daemon serves the retained archive.
-Scoped parser upgrades, schema repairs, and archive-only preservation rebuilds
-finish before the daemon starts listening. The status bar warns that results may
-be stale until the replacement is installed, and keeps the warning if rebuilding
-fails. Archive writes during the rebuild return HTTP 503 with `Retry-After` and
-`X-Agentsview-Archive-Rebuilding: true`. The CLI prints "waiting for archive
-rebuild" and retries after the rebuild. The browser shows the read-only error.
-HTTP archive responses carry `X-Agentsview-Archive-Stale: true` during this time.
-`GET /api/v1/sync/status` reports `archive_stale` alongside existing rebuild progress.
-`session usage` waits for its archive refresh. `usage daily` returns retained data
-with the stale warning.
-With `--no-sync`, the daemon serves the retained archive with stale warnings and leaves rebuilding disabled.
+During a full parser rebuild, the daemon serves the retained archive with stale
+warnings. Archive writes return HTTP 503 with `Retry-After`; the CLI waits and
+retries. Scoped upgrades and schema repairs finish before the daemon listens.
 
 The server shuts down cleanly on `Ctrl+C`, flushing the database and stopping
 file watchers.
@@ -559,9 +549,11 @@ its idle timeout expires. The command prints the server URL and how to stop it.
 An incremental local-only sync through the default daemon waits when another
 sync or maintenance pass owns it, then runs its requested pass. It prints
 waiting status; `Ctrl+C` cancels the wait without stopping the existing work.
-CLI writes retry the rebuild's HTTP 503 response. `Ctrl+C` cancels the wait.
-If the wait persists, inspect `agentsview daemon status` and `serve.log`.
-A daemon launched for this local sync skips its redundant startup sync.
+This waiting message applies when no remote hosts are configured. Full resync,
+syncs that include remote hosts, and servers started with `--no-sync` also wait
+for exclusive access, but do not show this message. If the wait persists,
+inspect `agentsview daemon status` and `serve.log`. A daemon launched for this
+local sync skips its redundant startup sync.
 
 For a one-shot offline sync, stop the writable daemon first, then run:
 
@@ -967,13 +959,13 @@ Report token usage and estimated cost aggregated by local-time day, scoped to
 the last 30 days by default. See [Token Usage & Costs](/docs/token-usage/) for a
 full write-up on reporting behavior and agent coverage.
 
-Daily reports through the daemon use retained archive data during an upgrade rebuild and when the daemon runs with `--no-sync`. Stale results print a warning to stderr, including with `--json`.
-
 The report reads committed archive data. If it starts the daemon, session sync
 runs in the background; run `agentsview sync` first when new source changes must
-be included. A cold usage cache prepares the sessions needed for the report
-without waiting for the full archive backfill. Slow reports print the current
-preparation phase and elapsed time to stderr, including with `--json`. Usage preparation is not subject to the
+be included. An older archive that requires reparsing is upgraded before the
+daemon starts serving, with startup progress shown in the terminal. A cold usage
+cache prepares the sessions needed for the report without waiting for the full
+archive backfill. Slow reports print the current preparation phase and elapsed
+time to stderr, including with `--json`. Usage preparation is not subject to the
 server's normal write timeout. Press Ctrl+C to stop waiting; shared cache work
 can continue in the daemon.
 
@@ -983,7 +975,7 @@ initial sync, including when they reuse a daemon started by daily usage.
 Statusline limits the complete wait and report request to 30 seconds.
 
 Offline reads require an archive at the current data version. If an upgrade
-requires a resync, run `agentsview sync` and wait for the command to finish
+requires a resync, run `agentsview daemon restart` and let the resync finish
 before retrying the offline command.
 
 ```bash

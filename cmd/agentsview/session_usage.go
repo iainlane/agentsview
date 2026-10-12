@@ -177,7 +177,7 @@ func httpSessionUsageData(
 	}
 	sessionID := query.SessionID
 	resolvedID, err := resolveServiceSessionID(
-		ctx, servicehttp.NewHTTPBackend(baseURL, token, false, ""), sessionID,
+		ctx, newDaemonHTTPBackend(baseURL, token, false, ""), sessionID,
 	)
 	if err != nil {
 		if errors.Is(err, errSessionNotFound) {
@@ -187,7 +187,7 @@ func httpSessionUsageData(
 		return nil, tokenUseExitErr, err
 	}
 	if !query.OwnOnly && !query.NoSync {
-		backend := servicehttp.NewHTTPBackend(baseURL, token, false, "")
+		backend := newDaemonHTTPBackend(baseURL, token, false, "")
 		if _, syncErr := backend.Sync(ctx, service.SyncInput{
 			ID: resolvedID, Subagents: true,
 		}); syncErr != nil && !errors.Is(syncErr, db.ErrReadOnly) {
@@ -197,7 +197,7 @@ func httpSessionUsageData(
 	// Request the full breakdown so the remote path matches the
 	// shape returned by the direct store paths, and the same subagent
 	// attribution scope so --server and local agree field for field.
-	api, err := apiclient.NewHTTPClient(baseURL, token, sessionUsageHTTPClient)
+	api, err := newDaemonAPIClient(baseURL, token, sessionUsageHTTPClient)
 	if err != nil {
 		return nil, tokenUseExitErr, err
 	}

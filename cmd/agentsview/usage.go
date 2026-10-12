@@ -63,7 +63,6 @@ func defaultUsageDateRange(
 }
 
 type UsageDailyConfig struct {
-	ctx       context.Context
 	JSON      bool
 	Since     string
 	Until     string
@@ -169,7 +168,7 @@ func runUsageDailyResult(cfg UsageDailyConfig) error {
 	}
 	noDefaultRange := cfg.All || cfg.Since != "" || cfg.Until != ""
 
-	ctx, stop := signal.NotifyContext(commandContext(cfg.ctx), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	backend, cleanup, err := resolveArchiveQueryBackend(ctx, archiveQueryPolicy{
 		Offline:              cfg.Offline,
@@ -248,7 +247,6 @@ func noTokenDataNote(agent string, totals db.UsageTotals) string {
 }
 
 type UsageStatuslineConfig struct {
-	ctx     context.Context
 	JSON    bool
 	Agent   string
 	Offline bool
@@ -291,7 +289,7 @@ func runUsageStatuslineResult(cfg UsageStatuslineConfig) error {
 		Timezone: timezone,
 	}
 
-	ctx, cancel := context.WithTimeout(commandContext(cfg.ctx), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	backend, cleanup, err := resolveArchiveQueryBackend(ctx, archiveQueryPolicy{
 		Offline:              cfg.Offline,
@@ -374,7 +372,9 @@ func ensureFreshData(
 	if skip {
 		return
 	}
-	ctx = commandContext(ctx)
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	// Silence engine worker log.Printf lines (e.g. "db:
 	// InsertMessages (N msgs)") for both branches so --json and
@@ -610,7 +610,7 @@ func fetchHTTPDailyUsage(
 	if filter.MinUserMessages > 0 {
 		q.MinUserMessages = new(int64(filter.MinUserMessages))
 	}
-	api, err := apiclient.NewHTTPClient(tr.URL, authToken, &http.Client{Timeout: 0})
+	api, err := newDaemonAPIClient(tr.URL, authToken, &http.Client{Timeout: 0})
 	if err != nil {
 		return db.DailyUsageResult{}, err
 	}

@@ -15,7 +15,6 @@ import (
 	"go.kenn.io/agentsview/internal/pricing"
 	"go.kenn.io/agentsview/internal/pricingrefresh"
 	"go.kenn.io/agentsview/internal/service"
-	"go.kenn.io/agentsview/internal/servicehttp"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -232,7 +231,7 @@ func (b daemonArchiveQueryBackend) MachineLabels(
 ) (service.MachineLabelCatalog, error) {
 	return service.MachineLabels(
 		ctx,
-		servicehttp.NewHTTPBackend(b.tr.URL, b.authToken, b.tr.ReadOnly, ""),
+		newDaemonHTTPBackend(b.tr.URL, b.authToken, b.tr.ReadOnly, ""),
 	)
 }
 

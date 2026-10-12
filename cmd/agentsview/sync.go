@@ -49,7 +49,6 @@ func runSync(cfg SyncConfig) {
 // db close) so runSync can translate the result into a non-zero
 // exit code without skipping that cleanup.
 func doSync(cfg SyncConfig) (hadRemoteFailures bool) {
-	ctx := context.Background()
 	if err := validateArtifactSyncConfig(cfg); err != nil {
 		fatal("%v", err)
 	}
@@ -104,8 +103,8 @@ func doSync(cfg SyncConfig) (hadRemoteFailures bool) {
 		// includeLocal is true. A remote-only request still needs a newly
 		// launched daemon to populate its existing local archive at startup.
 		appCfg.SkipInitialSync = includeLocal
-		tr, err := ensureTransportContext(
-			ctx, &appCfg, transportIntentArchiveWrite, 0,
+		tr, err := ensureTransport(
+			&appCfg, transportIntentArchiveWrite, 0,
 		)
 		if err != nil {
 			fatal("detecting daemon: %v", err)
@@ -120,7 +119,7 @@ func doSync(cfg SyncConfig) (hadRemoteFailures bool) {
 				fmt.Println("Running sync with remotes via daemon...")
 				progress := newRemoteProgressPrinter(os.Stdout, time.Now)
 				failures, err := runDaemonRemoteSync(
-					ctx, tr, appCfg.AuthToken,
+					context.Background(), tr, appCfg.AuthToken,
 					remoteHosts, cfg.Full, includeLocal, progress.Print,
 				)
 				progress.Finish()
@@ -156,7 +155,7 @@ func doSync(cfg SyncConfig) (hadRemoteFailures bool) {
 					onProgress = newSyncProgressPrinter(os.Stdout)
 				}
 				stats, err := runDaemonSync(
-					ctx, tr, appCfg.AuthToken, cfg.Full,
+					context.Background(), tr, appCfg.AuthToken, cfg.Full,
 					onProgress,
 				)
 				if progress != nil {
@@ -173,7 +172,7 @@ func doSync(cfg SyncConfig) (hadRemoteFailures bool) {
 					)
 					progress = newResyncProgressPrinter(os.Stdout, time.Now)
 					stats, err = runDaemonSync(
-						ctx, tr, appCfg.AuthToken, true,
+						context.Background(), tr, appCfg.AuthToken, true,
 						progress.Print,
 					)
 					progress.Finish()
@@ -958,7 +957,7 @@ func runDaemonSync(
 	full bool,
 	onProgress sync.ProgressFunc,
 ) (sync.SyncStats, error) {
-	api, err := apiclient.NewHTTPClient(tr.URL, authToken, &http.Client{Timeout: 0})
+	api, err := newDaemonAPIClient(tr.URL, authToken, &http.Client{Timeout: 0})
 	if err != nil {
 		return sync.SyncStats{}, err
 	}
@@ -1012,7 +1011,7 @@ func runDaemonRemoteSync(
 	includeLocal bool,
 	onProgress sync.ProgressFunc,
 ) ([]remoteHostFailure, error) {
-	api, err := apiclient.NewHTTPClient(tr.URL, authToken, &http.Client{Timeout: 0})
+	api, err := newDaemonAPIClient(tr.URL, authToken, &http.Client{Timeout: 0})
 	if err != nil {
 		return nil, err
 	}

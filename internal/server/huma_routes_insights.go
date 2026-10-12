@@ -182,7 +182,7 @@ func (s *Server) humaDeleteInsight(
 		return nil, err
 	}
 	if err := s.db.DeleteInsight(ctx, in.ID); err != nil {
-		if handled := s.handleHumaReadOnly(err); handled != nil {
+		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, serverError(err)
@@ -526,7 +526,7 @@ func (s *Server) humaGenerateInsight(
 // client to retry; anything else stays a generic failure.
 func insightSaveErrorMessage(err error) string {
 	if errors.Is(err, db.ErrWriterClosed) {
-		return "archive is read-only during maintenance or rebuilding; retry after it finishes"
+		return "archive is briefly read-only for a maintenance pass; retry shortly"
 	}
 	return "failed to save insight"
 }

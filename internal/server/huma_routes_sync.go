@@ -341,10 +341,6 @@ func (s *Server) archiveStale() bool {
 	return ok && local.NeedsResync()
 }
 
-func (s *Server) startupRebuildPending() bool {
-	return s.engine != nil && s.archiveStale() && !s.engine.StartupAttemptCompleted()
-}
-
 // rejectStaleArchiveForSync fails a worker-backed /sync when the archive's data
 // version changed, because the worker sync pass refuses to swap a stale archive
 // under the live daemon. It points the caller at /resync, which rebuilds through
@@ -358,6 +354,9 @@ func (s *Server) rejectStaleArchiveForSync() error {
 	local, ok := s.db.(*db.DB)
 	if !ok || !local.NeedsResync() {
 		return nil
+	}
+	if local.WriterClosed() {
+		return writerClosedError()
 	}
 	return huma.ErrorWithHeaders(
 		apiError(
@@ -436,6 +435,10 @@ func (s *Server) runResyncWithFallback(
 	ctx context.Context, engine *syncpkg.Engine,
 	progress func(syncpkg.Progress),
 ) (syncpkg.SyncStats, error) {
+	info, _ := ctx.Value(ctxKeyHumaRequestInfo).(requestInfo)
+	if info.ArchiveRetry && !s.archiveStale() {
+		return syncpkg.SyncStats{}, nil
+	}
 	if s.localResyncRunner != nil {
 		// The worker-backed runner builds the replacement archive in a child
 		// process behind a write barrier and swaps it in. It only returns an
@@ -1103,7 +1106,7 @@ func (s *Server) humaSyncSession(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := s.handleHumaReadOnly(err); handled != nil {
+		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		if errors.Is(err, db.ErrSessionExcluded) ||

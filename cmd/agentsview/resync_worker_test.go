@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,7 +11,6 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
-	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -93,53 +89,28 @@ func TestForegroundResyncRunnerReleasesStartupMaintenance(t *testing.T) {
 // resync catches up with an incremental pass instead of surfacing the bare
 // abort, and startup still reconciles and releases maintenance.
 func TestForegroundResyncRunnerAbortedResyncFallsBackIncremental(t *testing.T) {
-	for _, stale := range []bool{false, true} {
-		t.Run(fmt.Sprintf("stale %t", stale), func(t *testing.T) {
-			logs := captureLogOutput(t)
-			database := dbtest.OpenTestDB(t)
-			missingPath := filepath.Join(t.TempDir(), "missing.jsonl")
-			dbtest.SeedSessionWithMessages(t, database, "existing", "proj", []db.Message{dbtest.UserMsg("existing", 0, "retained transcript")}, func(s *db.Session) {
-				s.FilePath = &missingPath
-			})
-			if stale {
-				path := database.Path()
-				require.NoError(t, database.Close())
-				markArchiveStale(t, path)
-				var err error
-				database, err = db.Open(t.Context(), path)
-				require.NoError(t, err)
-				t.Cleanup(func() { _ = database.Close() })
-			}
-			engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{
-				Machine:                 "local",
-				DeferStartupMaintenance: true,
-			})
-			t.Cleanup(engine.Close)
+	database := dbtest.OpenTestDB(t)
+	missingPath := filepath.Join(t.TempDir(), "missing.jsonl")
+	dbtest.SeedSession(t, database, "existing", "proj", func(s *db.Session) {
+		s.FilePath = &missingPath
+	})
+	engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{
+		Machine:                 "local",
+		DeferStartupMaintenance: true,
+	})
+	t.Cleanup(engine.Close)
 
-			runner := newForegroundResyncRunner(
-				t.Context(), config.Config{}, engine, database,
-			)
-			var stats sync.SyncStats
-			var runErr error
-			runStartupArchiveRebuild(t.Context(), engine, func(ctx context.Context, progress func(sync.Progress)) (sync.SyncStats, error) {
-				stats, runErr = runner(ctx, progress)
-				return stats, runErr
-			})
-			require.NoError(t, runErr)
-			assert.False(t, stats.Aborted,
-				"a safely aborted resync must fall back to an incremental sync")
-			assert.True(t, engine.StartupReconciled(),
-				"the incremental fallback pass reconciles startup")
-			requireStartupMaintenanceReleased(t, engine)
-			assert.Equal(t, stale, database.NeedsResync())
-			assert.Contains(t, logs.String(), "resync: aborting swap, 0 synced / 0 failed / 0 total")
-			w := httptest.NewRecorder()
-			server.New(config.Config{Host: "127.0.0.1"}, database, engine).Handler().ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0/api/v1/sessions/existing/messages", nil))
-			assert.Equal(t, http.StatusOK, w.Code)
-			assert.Equal(t, stale, w.Header().Get("X-Agentsview-Archive-Stale") == "true")
-			assert.Contains(t, w.Body.String(), "retained transcript")
-		})
-	}
+	runner := newForegroundResyncRunner(
+		t.Context(), config.Config{}, engine, database,
+	)
+	stats, err := runner(t.Context(), nil)
+
+	require.NoError(t, err)
+	assert.False(t, stats.Aborted,
+		"a safely aborted resync must fall back to an incremental sync")
+	assert.True(t, engine.StartupReconciled(),
+		"the incremental fallback pass reconciles startup")
+	requireStartupMaintenanceReleased(t, engine)
 }
 
 // TestSyncAllReleasingStartupMaintenance covers the worker-aborted resync arm

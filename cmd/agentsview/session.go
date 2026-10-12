@@ -14,7 +14,6 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/pathutil"
 	"go.kenn.io/agentsview/internal/service"
-	"go.kenn.io/agentsview/internal/servicehttp"
 	"go.kenn.io/agentsview/internal/timeutil"
 )
 
@@ -72,7 +71,7 @@ func resolveService(
 		if err != nil {
 			return nil, nil, err
 		}
-		return servicehttp.NewHTTPBackend(remote, token, false, ""),
+		return newDaemonHTTPBackend(remote, token, false, ""),
 			func() {}, nil
 	}
 	cfg, err := config.LoadPFlags(cmd.Flags())
@@ -146,7 +145,7 @@ func resolveWritableServiceWithIntent(
 		if err != nil {
 			return nil, nil, err
 		}
-		return servicehttp.NewHTTPBackend(remote, token, false, ""),
+		return newDaemonHTTPBackend(remote, token, false, ""),
 			func() {}, nil
 	}
 	if pgReadRequested(cmd) {
@@ -160,7 +159,7 @@ func resolveWritableServiceWithIntent(
 	}
 	var tr transport
 	if fresh {
-		tr, err = ensureTransportContext(cmd.Context(), &cfg, transportIntentArchiveWrite, 0)
+		tr, err = ensureTransport(&cfg, transportIntentArchiveWrite, 0)
 	} else {
 		tr, err = detectTransport(cfg.DataDir, cfg.AuthToken, 0)
 	}

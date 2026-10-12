@@ -19,13 +19,14 @@ import (
 
 var projectsHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
-func runProjects(ctx context.Context, jsonOutput bool) {
+func runProjects(jsonOutput bool) {
 	appCfg, err := config.LoadMinimal()
 	if err != nil {
 		log.Fatalf("loading config: %v", err)
 	}
 
-	tr, err := ensureTransportContext(ctx, &appCfg, transportIntentRead, 0)
+	ctx := context.Background()
+	tr, err := ensureTransport(&appCfg, transportIntentRead, 0)
 	if err != nil {
 		fatal("resolving transport: %v", err)
 	}
@@ -49,7 +50,7 @@ func fetchHTTPProjects(
 	excludeOneShot bool,
 	excludeAutomated bool,
 ) ([]db.ProjectInfo, error) {
-	api, err := apiclient.NewHTTPClient(tr.URL, authToken, projectsHTTPClient)
+	api, err := newDaemonAPIClient(tr.URL, authToken, projectsHTTPClient)
 	if err != nil {
 		return nil, err
 	}

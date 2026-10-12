@@ -4739,16 +4739,6 @@ func (e *Engine) FinishStartupReconciled(stats SyncStats) {
 	e.notifyStartupReconciled()
 }
 
-// StartupAttemptCompleted reports completion even when startup failed.
-func (e *Engine) StartupAttemptCompleted() bool {
-	select {
-	case <-e.startupAttemptReady:
-		return true
-	default:
-		return false
-	}
-}
-
 // StartupReconciled reports whether a startup pass has already completed
 // authoritatively: the startupReconciledReady gate closes only on a successful
 // reconciliation, matching RunStartupSyncFallback's own re-run gate. The

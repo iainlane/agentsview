@@ -71,7 +71,7 @@ func (s *Server) humaPinMessage(ctx context.Context,
 ) (*createdOutput[pinMessageResponse], error) {
 	id, err := s.db.PinMessage(ctx, in.ID, in.MessageID, in.Body.Note)
 	if err != nil {
-		if handled := s.handleHumaReadOnly(err); handled != nil {
+		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("pin message", err)
@@ -90,7 +90,7 @@ func (s *Server) humaUnpinMessage(ctx context.Context,
 	in *messagePathInput,
 ) (*noContentOutput, error) {
 	if err := s.db.UnpinMessage(ctx, in.ID, in.MessageID); err != nil {
-		if handled := s.handleHumaReadOnly(err); handled != nil {
+		if handled := handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("unpin message", err)

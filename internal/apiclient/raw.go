@@ -18,7 +18,7 @@ func RawRequest(baseURL string, httpClient *http.Client, operation func(*Client)
 	if err != nil {
 		return nil, err
 	}
-	transport := &rawTransport{APIClient: builder, client: httpClient}
+	transport := &rawTransport{APIClient: builder, client: NewArchiveHTTPClient(httpClient)}
 	err = operation(NewClient(transport))
 	// Generated envelopes may report an HTTP status error. The raw consumer
 	// interprets that status and reads the original error body itself.
@@ -35,7 +35,7 @@ type rawTransport struct {
 }
 
 func (t *rawTransport) ExecuteRequest(ctx context.Context, req *http.Request, _ string) (*runtime.Response, error) {
-	response, err := Do(ctx, t.client, req) //nolint:bodyclose // RawRequest transfers the open response to its caller.
+	response, err := t.client.Do(req.WithContext(ctx)) //nolint:bodyclose // RawRequest transfers the open response to its caller.
 	if err != nil {
 		return nil, err
 	}

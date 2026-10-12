@@ -170,60 +170,45 @@ func TestServeCommandMountsWritableServerAtBasePath(t *testing.T) {
 			"AGENTSVIEW_RUN_SERVE_BASE_PATH=/av",
 			"AGENTSVIEW_DATA_DIR=" + dataDir,
 		},
-		"base path runtime record reached", 30*time.Second,
+		"base path runtime record reached",
 	)
 	require.NoError(t, err, string(out))
 	assert.Contains(t, string(out), "base path runtime record reached")
 }
 
-func TestServeSkipInitialSyncServesWhileReparsingStaleArchive(t *testing.T) {
-	for _, archive := range []string{"data version", "scoped pending", "schema repair"} {
-		t.Run(archive, func(t *testing.T) {
+func TestServeSkipInitialSyncStillReparsesStaleArchive(t *testing.T) {
+	for _, kind := range []string{"data version", "scoped pending", "schema repair"} {
+		t.Run(kind, func(t *testing.T) {
 			cfg := testConfigWithClaudeFixture(t)
 			cfg.Host = "127.0.0.1"
 			database, err := db.Open(t.Context(), cfg.DBPath)
 			require.NoError(t, err)
 			dbtest.SeedSessionWithMessages(t, database, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")})
 			require.NoError(t, database.Close())
-			if archive == "data version" {
+			if kind == "data version" {
 				markArchiveStale(t, cfg.DBPath)
 			} else {
 				conn, err := sql.Open("sqlite3", cfg.DBPath)
 				require.NoError(t, err)
-				t.Cleanup(func() { _ = conn.Close() })
 				statement := "INSERT INTO stats(key, value) VALUES ('scoped_upgrade_pending', 1)"
-				if archive == "schema repair" {
+				if kind == "schema repair" {
 					statement = "ALTER TABLE tool_calls DROP COLUMN result_content_length"
 				}
 				_, err = conn.ExecContext(t.Context(), statement)
 				require.NoError(t, err)
 				require.NoError(t, conn.Close())
 			}
-			needsResync, fullRebuild, err := db.ArchiveResyncState(t.Context(), cfg.DBPath)
-			require.NoError(t, err)
-			assert.True(t, needsResync)
-			assert.Equal(t, archive == "data version", fullRebuild)
 			data, err := json.Marshal(cfg)
 			require.NoError(t, err)
-			out, err := runRuntimeWarningHelperProcess(t, "serve", "TestServeStaleArchiveHelperProcess",
-				[]string{
-					"AGENTSVIEW_STALE_SERVE_CONFIG=" + string(data),
-					"AGENTSVIEW_STALE_SERVE_KIND=" + archive,
-					"AGENTSVIEW_STALE_SERVE_SOURCES=" + cfg.AgentDirs[parser.AgentClaude][0],
-				}, "archive rebuild complete", 2*time.Minute)
+			out, err := runRuntimeWarningHelperProcess(t, "serve", "TestServeStaleArchiveHelperProcess", []string{
+				"AGENTSVIEW_STALE_SERVE_CONFIG=" + string(data),
+				"AGENTSVIEW_STALE_SERVE_SOURCES=" + cfg.AgentDirs[parser.AgentClaude][0],
+				"AGENTSVIEW_STALE_SERVE_KIND=" + kind,
+			}, "archive rebuild complete")
 			require.NoError(t, err, string(out))
-			if archive == "data version" {
-				assert.Contains(t, string(out), "old archive readable before startup rebuild")
-			} else {
-				assert.Contains(t, string(out), "archive reparsed before readiness")
-			}
-			stale, _, err := db.ArchiveResyncState(t.Context(), cfg.DBPath)
+			stale, err := db.ArchiveNeedsResync(t.Context(), cfg.DBPath)
 			require.NoError(t, err)
-			assert.False(t, stale, "the required reparse must eventually install its replacement")
-			serveLog, err := os.ReadFile(filepath.Join(cfg.DataDir, "debug.log"))
-			require.NoError(t, err)
-			assert.NotContains(t, string(serveLog), "required archive rebuild did not complete",
-				"a pending background rebuild must not be logged as failed")
+			assert.False(t, stale)
 		})
 	}
 }
@@ -236,78 +221,53 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 	var cfg config.Config
 	require.NoError(t, json.Unmarshal([]byte(data), &cfg))
 	cfg.DBPath = filepath.Join(cfg.DataDir, "sessions.db")
-	cfg.AgentDirs = map[parser.AgentType][]string{
-		parser.AgentClaude: {os.Getenv("AGENTSVIEW_STALE_SERVE_SOURCES")},
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {os.Getenv("AGENTSVIEW_STALE_SERVE_SOURCES")}}
+	kind := os.Getenv("AGENTSVIEW_STALE_SERVE_KIND")
+	if kind == "" {
+		runServe(t.Context(), cfg, serveOptions{SkipInitialSync: true}, 0)
+		return
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	failures := make(chan error, 1)
-	var pollDone chan struct{}
-	fail := func(err error) (string, error) {
-		failures <- err
-		cancel()
-		return "", err
+	release := make(chan struct{})
+	if kind == "data version" {
+		stubLaunchSyncWorker(t, func(ctx context.Context, cfg config.Config, request syncWorkerRequest, _ func(workerLine)) (workerResult, error) {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return workerResult{}, ctx.Err()
+			}
+			var result workerResult
+			err := runSyncWorkerResyncBuild(ctx, cfg, request.Mode, func(line workerLine) {
+				if line.Result != nil {
+					result = *line.Result
+				}
+			}, func(agentsync.Progress) {})
+			return result, err
+		})
 	}
 	original := writeDaemonRuntimeWithAuthAndNoSync
-	writeDaemonRuntimeWithAuthAndNoSync = func(
-		dataDir, host string, port int, version, browserURL string, readOnly,
-		requireAuth, noSync bool, explicitPort *int, caddyPID ...int,
-	) (string, error) {
-		if os.Getenv("AGENTSVIEW_STALE_SERVE_KIND") == "" {
-			runtime, err := original(dataDir, host, port, version, browserURL, readOnly, requireAuth, noSync, explicitPort, caddyPID...)
-			if err != nil {
-				return fail(err)
-			}
-			fmt.Println("archive runtime published")
-			return runtime, nil
-		}
-		backgroundRebuild := os.Getenv("AGENTSVIEW_STALE_SERVE_KIND") == "data version"
+	writeDaemonRuntimeWithAuthAndNoSync = func(dataDir, host string, port int, version, browserURL string, readOnly, requireAuth, noSync bool, explicitPort *int, caddyPID ...int) (string, error) {
 		base := fmt.Sprintf("http://%s:%d", host, port)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/sessions/retained/messages", nil)
-		if err != nil {
-			return fail(err)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return fail(err)
-		}
-		defer resp.Body.Close()
-		wantStale := ""
-		if backgroundRebuild {
-			wantStale = "true"
-		}
-		if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Agentsview-Archive-Stale") != wantStale {
-			return fail(fmt.Errorf("retained archive read: status=%d stale=%q", resp.StatusCode, resp.Header.Get("X-Agentsview-Archive-Stale")))
-		}
+		resp, err := http.Get(base + "/api/v1/sessions/retained/messages")
+		require.NoError(t, err)
 		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fail(err)
-		}
-		if !strings.Contains(string(body), "retained transcript") {
-			return fail(fmt.Errorf("retained transcript missing from messages: %s", body))
-		}
-		if !backgroundRebuild {
-			stale, _, err := db.ArchiveResyncState(ctx, cfg.DBPath)
-			if err != nil || stale {
-				return fail(fmt.Errorf("archive still needs startup sync: stale=%t err=%v", stale, err))
-			}
-			fmt.Println("archive reparsed before readiness")
-			fmt.Println("archive rebuild complete")
-			return original(dataDir, host, port, version, browserURL, readOnly, requireAuth, noSync, explicitPort, caddyPID...)
-		}
-		fmt.Println("old archive readable before startup rebuild")
-		pollDone = make(chan struct{})
-		go func() {
-			defer close(pollDone)
-			if !assert.Eventually(t, func() bool {
-				if ctx.Err() != nil {
-					return true
-				}
-				req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/sync/status", nil)
-				if err != nil {
-					return false
-				}
-				resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.Contains(t, string(body), "retained transcript")
+		if kind == "data version" {
+			require.Equal(t, "true", resp.Header.Get("X-Agentsview-Archive-Stale"))
+			req, err := http.NewRequest(http.MethodPatch, base+"/api/v1/sessions/retained/rename", strings.NewReader(`{"display_name":"changed"}`))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", base)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+			require.Equal(t, "5", resp.Header.Get("Retry-After"))
+			close(release)
+			require.Eventually(t, func() bool {
+				resp, err := http.Get(base + "/api/v1/sync/status")
 				if err != nil {
 					return false
 				}
@@ -316,33 +276,14 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 					ArchiveStale bool `json:"archive_stale"`
 				}
 				return json.UnmarshalRead(resp.Body, &status) == nil && !status.ArchiveStale
-			}, 90*time.Second, 10*time.Millisecond) {
-				_, _ = fail(errors.New("archive rebuild did not finish"))
-				return
-			}
-			if ctx.Err() != nil {
-				return
-			}
-			fmt.Println("archive rebuild complete")
-		}()
+			}, 20*time.Second, 10*time.Millisecond)
+		} else {
+			require.Empty(t, resp.Header.Get("X-Agentsview-Archive-Stale"))
+		}
+		fmt.Println("archive rebuild complete")
 		return original(dataDir, host, port, version, browserURL, readOnly, requireAuth, noSync, explicitPort, caddyPID...)
 	}
-	go func() {
-		scanner := bufio.NewScanner(os.Stdin)
-		if scanner.Scan() && scanner.Text() == "stop" {
-			cancel()
-		}
-	}()
-	runServe(ctx, cfg, serveOptions{SkipInitialSync: true}, 0)
-	cancel()
-	if pollDone != nil {
-		<-pollDone
-	}
-	select {
-	case err := <-failures:
-		require.NoError(t, err)
-	default:
-	}
+	runServe(t.Context(), cfg, serveOptions{SkipInitialSync: true}, 0)
 }
 
 func TestPGServeRuntimeRecordWriteFailureWarnsVisible(t *testing.T) {
@@ -369,15 +310,15 @@ func runServeRuntimeWarningHelper(
 			"AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_FAIL=" + strconv.FormatBool(failWrite),
 			"AGENTSVIEW_DATA_DIR=" + dataDir,
 		},
-		marker, 30*time.Second,
+		marker,
 	)
 }
 
 func runRuntimeWarningHelperProcess(
-	t *testing.T, helperName, testName string, env []string, marker string, timeout time.Duration,
+	t *testing.T, helperName, testName string, env []string, marker string,
 ) ([]byte, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), timeout)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+testName+"$")
 	cmd.Env = append(os.Environ(), env...)
@@ -413,11 +354,7 @@ func runRuntimeWarningHelperProcess(
 		}
 		if !observed && strings.Contains(line, marker) {
 			observed = true
-			if testName == "TestServeStaleArchiveHelperProcess" {
-				_, stopErr = io.WriteString(stdin, "stop\n")
-			} else {
-				stopErr = cmd.Cancel()
-			}
+			stopErr = cmd.Cancel()
 		}
 	}
 	scanErr := scanner.Err()
@@ -438,7 +375,7 @@ func runRuntimeWarningHelperProcess(
 				helperName, stopErr, combined,
 			)
 		}
-		if _, ok := errors.AsType[*exec.ExitError](waitErr); waitErr != nil && (!ok || testName == "TestServeStaleArchiveHelperProcess") {
+		if _, ok := errors.AsType[*exec.ExitError](waitErr); waitErr != nil && !ok {
 			return combined, fmt.Errorf(
 				"wait for stopped %s helper after stdout marker: %w\noutput:\n%s",
 				helperName, waitErr, combined,
@@ -539,7 +476,7 @@ func runPGRuntimeWarningHelper(t *testing.T) ([]byte, error) {
 			"AGENTSVIEW_RUN_PG_RUNTIME_WARNING_HELPER=1",
 			"AGENTSVIEW_DATA_DIR=" + dataDir,
 		},
-		"could not write daemon runtime record", 30*time.Second,
+		"could not write daemon runtime record",
 	)
 }
 

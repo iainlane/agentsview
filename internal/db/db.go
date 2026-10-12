@@ -1312,7 +1312,7 @@ func open(
 		return nil, err
 	}
 	progress.report("Opening database")
-	schemaRepairNeeded, _, dataStale, err := probeDatabase(ctx, path)
+	schemaRepairNeeded, dataStale, err := probeDatabase(ctx, path, false)
 	if err != nil {
 		return nil, fmt.Errorf("checking database: %w", err)
 	}
@@ -1802,7 +1802,7 @@ func OpenReadOnly(ctx context.Context, path string) (*DB, error) {
 		reader.Close()
 		return nil, err
 	}
-	schemaStale, dataStale, _, err := probeDatabaseConn(ctx, reader)
+	schemaStale, dataStale, err := probeDatabaseConn(ctx, reader, true)
 	if err != nil {
 		reader.Close()
 		return nil, fmt.Errorf(
@@ -2037,51 +2037,75 @@ func (db *DB) hasCursorUsageTable(ctx context.Context) bool {
 // written by a newer agentsview binary. Older data versions are compatible
 // with startup because callers can run the normal non-destructive resync path.
 func CheckDataVersion(ctx context.Context, path string) error {
-	_, _, _, err := probeDatabase(ctx, path)
+	_, _, err := probeDatabase(ctx, path, false)
 	return err
 }
 
-// ArchiveResyncState distinguishes startup reparsing from a full parser rebuild.
-func ArchiveResyncState(ctx context.Context, path string) (needsResync, fullRebuild bool, err error) {
-	schema, stale, fullRebuild, err := probeDatabase(ctx, path)
-	return schema || stale, fullRebuild, err
+// ArchiveNeedsResync reports whether startup must run its initial sync.
+func ArchiveNeedsResync(ctx context.Context, path string) (bool, error) {
+	schemaStale, dataStale, err := probeDatabase(ctx, path, true)
+	return schemaStale || dataStale, err
 }
 
 // probeDatabase checks an existing database for schema and data staleness.
-// A writable Open repairs missing legacy columns before initializing schema
-// indexes, then requires a
+// It returns (schemaRepairNeeded, dataStale, err). A writable Open repairs
+// missing legacy columns before initializing schema indexes, then requires a
 // non-destructive resync. Startup and cold reads also check scoped readiness.
 func probeDatabase(ctx context.Context,
-	path string,
-) (schemaRepairNeeded, dataStale, fullRebuild bool, err error) {
+	path string, includeScoped bool,
+) (schemaRepairNeeded, dataStale bool, err error) {
+	conn, err := openDatabaseProbe(path)
+	if err != nil || conn == nil {
+		return false, false, err
+	}
+	defer conn.Close()
+
+	return probeDatabaseConn(ctx, conn, includeScoped)
+}
+
+// ArchiveResyncState reads both startup decisions from the same archive connection.
+func ArchiveResyncState(ctx context.Context, path string) (needsResync, fullRebuild bool, err error) {
+	conn, err := openDatabaseProbe(path)
+	if err != nil || conn == nil {
+		return false, false, err
+	}
+	defer conn.Close()
+	schema, stale, err := probeDatabaseConn(ctx, conn, true)
+	if err != nil || schema || !stale {
+		return schema || stale, false, err
+	}
+	version, archiveOnly, err := readUserVersion(ctx, conn)
+	return true, archiveOnly || version < dataVersion && len(ScopedDataVersionProviders(version, dataVersion)) == 0, err
+}
+
+func openDatabaseProbe(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
-			return false, false, false, nil
+			return nil, nil
 		}
-		return false, false, false, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"checking database file: %w", err,
 		)
 	}
 	conn, err := sql.Open(sqliteArchiveDriverName, makeDSN(path, true))
 	if err != nil {
-		return false, false, false, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"probing schema: %w", err,
 		)
 	}
-	defer conn.Close()
 
-	return probeDatabaseConn(ctx, conn)
+	return conn, nil
 }
 
 func probeDatabaseConn(ctx context.Context,
-	conn *sql.DB,
-) (schemaRepairNeeded, dataStale, fullRebuild bool, err error) {
+	conn *sql.DB, includeScoped bool,
+) (schemaRepairNeeded, dataStale bool, err error) {
 	version, archiveOnly, err := readUserVersion(ctx, conn)
 	if err != nil {
-		return false, false, false, err
+		return false, false, err
 	}
 	if version > dataVersion {
-		return false, false, false, &DataVersionTooNewError{
+		return false, false, &DataVersionTooNewError{
 			DatabaseVersion: version,
 			BinaryVersion:   dataVersion,
 		}
@@ -2089,20 +2113,28 @@ func probeDatabaseConn(ctx context.Context,
 
 	schema, err := needsSchemaRepair(ctx, conn)
 	if err != nil {
-		return false, false, false, err
+		return false, false, err
 	}
 	if schema {
-		return true, false, false, nil
+		return true, false, nil
 	}
-	var pending bool
-	if err := conn.QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM stats WHERE key = ? AND value > 0)",
-		scopedUpgradePendingKey,
-	).Scan(&pending); err != nil {
-		return false, false, false, err
+	// Archive-only archives cannot reparse sources, so any stale version
+	// needs their preservation rebuild.
+	countScoped := includeScoped || archiveOnly
+	if countScoped {
+		var pending bool
+		if err := conn.QueryRowContext(ctx,
+			"SELECT EXISTS(SELECT 1 FROM stats WHERE key = ? AND value > 0)",
+			scopedUpgradePendingKey,
+		).Scan(&pending); err != nil || pending {
+			return false, pending, err
+		}
 	}
-	fullRebuild = archiveOnly && pending || version < dataVersion && (archiveOnly || len(ScopedDataVersionProviders(version, dataVersion)) == 0)
-	return false, pending || version < dataVersion, fullRebuild, nil
+	if version >= dataVersion {
+		return false, false, nil
+	}
+	return false, countScoped ||
+		len(ScopedDataVersionProviders(version, dataVersion)) == 0, nil
 }
 
 // needsSchemaRepair probes for required legacy columns that may be missing in

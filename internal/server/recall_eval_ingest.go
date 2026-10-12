@@ -112,7 +112,7 @@ func (s *Server) handleIngestEvalTrajectory(
 		if handleContextError(w, err) {
 			return
 		}
-		if s.handleReadOnly(w, err) {
+		if handleReadOnly(w, err) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -2324,6 +2324,21 @@ func TestOnDemandSyncEngineKeepsStartupProvidersUntilRestart(t *testing.T) {
 		engine.ReconciliationRootsForAgent(string(parser.AgentGemini)))
 }
 
+func TestHumaTriggerResyncRetriedAfterStartupRebuild(t *testing.T) {
+	f := newSyncRouteFixture(t)
+	calls := 0
+	f.srv.localResyncRunner = func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
+		calls++
+		return syncpkg.SyncStats{}, nil
+	}
+	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/resync", nil, func(req *http.Request) { req.Header.Set("X-Agentsview-Archive-Stale", "true") })
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Zero(t, calls)
+	w = serveJSON(t, f.handler, http.MethodPost, "/api/v1/resync", nil)
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, 1, calls)
+}
+
 // newStartupRebuildFixture serves a stale archive with a daemon engine whose
 // startup attempt has not completed, as runServe does while it rebuilds.
 func newStartupRebuildFixture(t *testing.T) (*syncRouteFixture, *syncpkg.Engine) {
@@ -2358,6 +2373,8 @@ func TestStartupRebuildWriteGate(t *testing.T) {
 		{http.MethodPost, "/api/v1/push/pg", `{"full":false}`, true},
 		{http.MethodPatch, "/api/v1/sessions/retained/rename", `{"display_name":"renamed"}`, true},
 		{http.MethodDelete, "/api/v1/sessions/retained", "", true},
+		{http.MethodPost, "/api/v1/settings/worktree-mappings", `{"machine":"local","path_prefix":"/work","project":"project"}`, true},
+		{http.MethodPost, "/api/v1/data/compact", `{}`, true},
 		{http.MethodPost, "/api/v1/config/github", `{}`, false},
 		{http.MethodPost, "/api/v1/sessions/retained/resume", `{"command_only":true}`, false},
 		{http.MethodPost, "/api/v1/sessions/retained/open", `{}`, false},
@@ -2365,8 +2382,6 @@ func TestStartupRebuildWriteGate(t *testing.T) {
 		{http.MethodPost, "/api/v1/settings/worktree-mappings/preview", `{}`, false},
 		{http.MethodPost, "/api/v1/memory/refresh", "", false},
 		{http.MethodPost, "/api/v1/recall/query", `{}`, false},
-		{http.MethodPost, "/api/v1/remote-sync/manifest", `{}`, false},
-		{http.MethodPost, "/api/v1/remote-sync/archive", `{}`, false},
 		{http.MethodGet, "/api/v1/sessions", "", false},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
@@ -2378,12 +2393,12 @@ func TestStartupRebuildWriteGate(t *testing.T) {
 			if tc.blocked {
 				assert.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 				assert.Equal(t, writerClosedRetryAfterSeconds, w.Header().Get("Retry-After"))
-				assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Rebuilding"))
-				assert.Contains(t, w.Body.String(), "archive is read-only")
+				assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
+				assert.Contains(t, w.Body.String(), "read-only")
 			} else {
 				assert.NotEqual(t, http.StatusMethodNotAllowed, w.Code)
 				assert.NotEqual(t, http.StatusNotFound, w.Code, w.Body.String())
-				assert.Empty(t, w.Header().Get("X-Agentsview-Archive-Rebuilding"))
+				assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
 				assert.NotContains(t, w.Body.String(), "archive is read-only")
 			}
 		})
@@ -2393,5 +2408,5 @@ func TestStartupRebuildWriteGate(t *testing.T) {
 	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sync", nil)
 	assert.Equal(t, http.StatusConflict, w.Code)
 	assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader))
-	assert.Empty(t, w.Header().Get("X-Agentsview-Archive-Rebuilding"))
+	assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
 }

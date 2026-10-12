@@ -25,6 +25,7 @@ func TestArchiveAuditRetriesWithBackoffOnFailure(t *testing.T) {
 		first time.Duration
 		want  []time.Duration
 	}{
+		{0, []time.Duration{0, time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 16 * time.Hour, archiveAuditInterval, archiveAuditInterval}},
 		{archiveAuditInterval, []time.Duration{archiveAuditInterval, time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 16 * time.Hour, archiveAuditInterval, archiveAuditInterval}},
 		{archiveAuditRetryInitial, []time.Duration{time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 16 * time.Hour, archiveAuditInterval, archiveAuditInterval, archiveAuditInterval}},
 	} {
