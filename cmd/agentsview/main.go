@@ -430,8 +430,8 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 				return
 			}
 		}
-		if database.NeedsResync() {
-			log.Printf("ERROR: required archive rebuild did not complete for data version %d; serving the existing archive, retrying in %s", db.CurrentDataVersion(), archiveAuditRetryInitial)
+		if database.NeedsResync() && !startupRebuild {
+			logPendingArchiveRebuild()
 		}
 
 		// Backfill runs in the background. On a large DB (e.g.
@@ -461,6 +461,9 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 						runStartupArchiveRebuild(ctx, engine,
 							newForegroundResyncRunner(ctx, cfg, engine, database))
 					})
+					if database.NeedsResync() && ctx.Err() == nil {
+						logPendingArchiveRebuild()
+					}
 				}()
 			}
 		}
@@ -1110,6 +1113,12 @@ func newForegroundSyncRunner(
 			ctx, false, progress, func(bool) error { return nil },
 		)
 	}
+}
+
+// logPendingArchiveRebuild reports a required rebuild that startup could not
+// finish. The archive audit loop retries it after archiveAuditRetryInitial.
+func logPendingArchiveRebuild() {
+	log.Printf("ERROR: required archive rebuild did not complete for data version %d; serving the existing archive, retrying in %s", db.CurrentDataVersion(), archiveAuditRetryInitial)
 }
 
 func runStartupArchiveRebuild(ctx context.Context, engine *sync.Engine, runner server.LocalResyncRunner) {

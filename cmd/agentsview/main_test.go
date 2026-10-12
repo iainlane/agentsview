@@ -197,6 +197,10 @@ func TestServeSkipInitialSyncServesWhileReparsingStaleArchive(t *testing.T) {
 	stale, err := db.ArchiveNeedsResync(t.Context(), cfg.DBPath)
 	require.NoError(t, err)
 	assert.False(t, stale, "the required reparse must eventually install its replacement")
+	serveLog, err := os.ReadFile(filepath.Join(cfg.DataDir, "debug.log"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(serveLog), "required archive rebuild did not complete",
+		"a pending background rebuild must not be logged as failed")
 }
 
 func TestServeStaleArchiveHelperProcess(t *testing.T) {
