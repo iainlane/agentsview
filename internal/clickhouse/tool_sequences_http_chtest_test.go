@@ -138,7 +138,7 @@ func getToolSequencesDocument(t *testing.T, handler http.Handler, sessionID stri
 }
 
 // A push that fails after deleting a shortened transcript's messages can leave
-// their tool calls behind. Evidence must not link to the missing message.
+// their tool calls behind. Evidence links only to messages that still exist.
 func TestToolEvidenceIgnoresOrdinalOfMissingMessage(t *testing.T) {
 	local := dbtest.OpenTestDB(t)
 	const sessionID = "tool-evidence-missing-message"
@@ -168,15 +168,28 @@ func TestToolEvidenceIgnoresOrdinalOfMissingMessage(t *testing.T) {
 	require.NotNil(t, before.Sessions[0].MessageOrdinal)
 	missing := *before.Sessions[0].MessageOrdinal
 
-	conn := chtest.Open(t, dsn, database)
-	_, err = conn.ExecContext(t.Context(), `DELETE FROM messages WHERE session_id = ? AND ordinal = ?`, sessionID, missing)
-	require.NoError(t, err)
-	require.Equal(t, 1, chtest.Count(t, conn, "tool_calls", "session_id = ? AND message_ordinal = ?", sessionID, missing))
+	require.Equal(t, 1, missing)
+	require.Equal(t, 2, before.Sessions[0].SignalTotal)
 
+	conn := chtest.Open(t, dsn, database)
+	deleteMessage := func(ordinal int) {
+		t.Helper()
+		_, err := conn.ExecContext(t.Context(), `DELETE FROM messages WHERE session_id = ? AND ordinal = ?`, sessionID, ordinal)
+		require.NoError(t, err)
+		require.Equal(t, 1, chtest.Count(t, conn, "tool_calls", "session_id = ? AND message_ordinal = ?", sessionID, ordinal))
+	}
+	deleteMessage(missing)
 	after, err := store.GetAnalyticsSignalSessions(t.Context(), filter, "tool_empty_rate", 10)
 	require.NoError(t, err)
-	for _, example := range after.Sessions {
-		require.NotNil(t, example.MessageOrdinal)
-		assert.NotEqual(t, missing, *example.MessageOrdinal)
-	}
+	require.Len(t, after.Sessions, 1)
+	// The link moves to the surviving matching call, not the session's first message.
+	assert.Equal(t, new(2), after.Sessions[0].MessageOrdinal)
+	assert.Equal(t, 2, after.Sessions[0].SignalTotal)
+
+	deleteMessage(2)
+	orphaned, err := store.GetAnalyticsSignalSessions(t.Context(), filter, "tool_empty_rate", 10)
+	require.NoError(t, err)
+	require.Len(t, orphaned.Sessions, 1)
+	assert.Nil(t, orphaned.Sessions[0].MessageOrdinal)
+	assert.Equal(t, 2, orphaned.Sessions[0].SignalTotal)
 }

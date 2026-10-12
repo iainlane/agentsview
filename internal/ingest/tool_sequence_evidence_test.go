@@ -19,7 +19,7 @@ func TestToolSequenceStructuredEvidence(t *testing.T) {
 		{"images and staged", []db.ToolResultEvent{{AgentID: "a", Content: "[image]"}, {AgentID: "b", Content: "staged:7"}}, signals.ToolOutcomeUnknown},
 		{"latest per agent", []db.ToolResultEvent{{AgentID: "a", Content: "old text"}, {AgentID: "a", Content: "[image]"}, {AgentID: "b", Content: "[binary content]"}}, signals.ToolOutcomeUnknown},
 		{"mixed text", []db.ToolResultEvent{{AgentID: "a", Content: "[image]"}, {AgentID: "b", Content: "file contents"}}, signals.ToolOutcomeContent},
-		{"trimmed agent ID", []db.ToolResultEvent{{AgentID: "\tagent-a", Content: "[image]"}, {AgentID: "agent-a", Content: "content"}}, signals.ToolOutcomeContent},
+		{"trimmed agent ID", []db.ToolResultEvent{{AgentID: "agent-a", Content: "old text"}, {AgentID: "\tagent-a", Content: "[image]"}}, signals.ToolOutcomeUnknown},
 		{"whitespace latest", []db.ToolResultEvent{{Content: "[image]"}, {Content: "\t\u2002\r\n"}}, signals.ToolOutcomeUnknown},
 		{"single blank event", []db.ToolResultEvent{{Content: "", Status: "completed"}}, signals.ToolOutcomeEmpty},
 		{"several blank events", []db.ToolResultEvent{{Content: "", Status: "completed"}, {Content: "", Status: "completed"}}, signals.ToolOutcomeEmpty},

@@ -230,10 +230,10 @@ func (s analyticsSQL) VisitTools(ctx context.Context, f db.AnalyticsFilter, ids 
 	from, to := readbase.AnalyticsWindowBounds(f)
 	windowPred, windowArgs := chAnalyticsMessageWindowPred("m.timestamp", from, to)
 	args = append(args, windowArgs...)
-	// A tool call whose message row is missing reads ordinal 0 from the unmatched join.
+	// An unmatched join reads ordinal 0, so only calls whose message exists supply the ordinal.
 	query := `SELECT tc.session_id, tc.category,
 			trim(COALESCE(tc.tool_name, '')), toInt64(COUNT(*)),
-			MAX(m.timestamp), MIN(m.ordinal)` + db.ToolEffectivenessSQL("tc", "s.quality_signal_version") + `
+			MAX(m.timestamp), minOrNullIf(m.ordinal, m.session_id != '')` + db.ToolEffectivenessSQL("tc", "s.quality_signal_version") + `
 			FROM tool_calls tc
 			JOIN (SELECT id, quality_signal_version FROM sessions WHERE id IN ` + ph + `) s ON s.id = tc.session_id
 			LEFT JOIN (` + chAnalyticsToolCallMessagesSQL + ph + `) m

@@ -117,13 +117,11 @@ func BuildToolMetricEvidence(rows []ToolAnalyticsRow, signal, toolName string, o
 		}
 		example, ok := examples[row.SessionID]
 		if !ok {
-			ordinal := row.Ordinal
-			example = SignalSessionExample{SessionID: row.SessionID, Project: row.Project, Agent: row.Agent, Date: row.Date, ReasonCode: signal, MessageOrdinal: &ordinal}
+			example = SignalSessionExample{SessionID: row.SessionID, Project: row.Project, Agent: row.Agent, Date: row.Date, ReasonCode: signal}
 		}
 		example.SignalTotal += count
-		if row.Ordinal < *example.MessageOrdinal {
-			ordinal := row.Ordinal
-			example.MessageOrdinal = &ordinal
+		if row.Ordinal != nil && (example.MessageOrdinal == nil || *row.Ordinal < *example.MessageOrdinal) {
+			example.MessageOrdinal = new(*row.Ordinal)
 		}
 		if row.Date > example.Date {
 			example.Date = row.Date

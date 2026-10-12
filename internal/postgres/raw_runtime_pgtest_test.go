@@ -319,11 +319,18 @@ func TestHostedRuntimeAcceptsOnlyRequiredProjectionMutations(t *testing.T) {
 		require.NoError(t, f.runtime.QueryRow(`SELECT count(*) FROM `+table).Scan(&count))
 		assert.Positive(t, count, table)
 	}
+	// Drop both the stored observations and their cached snapshot, so the
+	// replay must write them back with only the column UPDATE grants.
 	_, err = f.admin.Exec(`UPDATE tool_calls SET observed_outcome=NULL,observed_repeat=NULL,sequence_ending=NULL`)
+	require.NoError(t, err)
+	_, err = f.admin.Exec(`UPDATE raw_content_revisions SET recency_state = recency_state - 'ToolObservations'`)
 	require.NoError(t, err)
 	replay, replayReceipt := f.accept(t, "device-a", "observation-refresh", receipt.Receipt)
 	require.NoError(t, f.sink.Project(t.Context(), f.lease(t, replay), replay, out))
 	receipt = replayReceipt
+	var restored int
+	require.NoError(t, f.runtime.QueryRow(`SELECT count(*) FROM tool_calls WHERE observed_outcome IS NOT NULL AND observed_repeat IS NOT NULL`).Scan(&restored))
+	assert.Positive(t, restored)
 	_, err = f.runtime.Exec(`UPDATE tool_calls SET result_content='edited'`)
 	require.Error(t, err)
 	_, err = f.runtime.Exec(`DELETE FROM tool_calls`)

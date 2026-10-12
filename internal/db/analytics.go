@@ -2512,8 +2512,10 @@ type ToolsAnalyticsResponse struct {
 // aggregate concrete tool usage after native stores apply their filters.
 type ToolAnalyticsRow struct {
 	ToolEffectivenessCounts
-	Project   string
-	Ordinal   int
+	Project string
+	// Ordinal is the first ordinal among the row's calls whose message still
+	// exists; nil when none do, so evidence never links to a missing message.
+	Ordinal   *int
 	SessionID string
 	ToolName  string
 	Category  string
@@ -2911,7 +2913,7 @@ func analyticsToolsQuery(
 	query := `SELECT tc.session_id, tc.category,
 			TRIM(COALESCE(tc.tool_name, '')), COUNT(*)`
 	if includeMessageMeta {
-		query += `, MAX(COALESCE(m.timestamp, '')), COALESCE(MIN(m.ordinal), 0)` + ToolEffectivenessSQL("tc", "s.quality_signal_version")
+		query += `, MAX(COALESCE(m.timestamp, '')), MIN(m.ordinal)` + ToolEffectivenessSQL("tc", "s.quality_signal_version")
 	}
 	query += `
 		FROM tool_calls tc JOIN sessions s ON s.id = tc.session_id`
@@ -3049,7 +3051,8 @@ func (db *DB) analyticsToolRows(
 			defer rows.Close()
 			for rows.Next() {
 				var sid, cat, toolName, ts string
-				var count, ordinal int
+				var count int
+				var ordinal *int
 				var facts ToolEffectivenessCounts
 				if err := rows.Scan(
 					append([]any{&sid, &cat, &toolName, &count, &ts, &ordinal}, facts.ScanTargets()...)...,

@@ -755,7 +755,8 @@ type AnalyticsToolVisit struct {
 	Name      string
 	Timestamp string
 	Count     int
-	Ordinal   int
+	// Ordinal is nil when none of the row's calls has a stored message.
+	Ordinal *int
 }
 
 func (s *Analytics) analyticsToolRows(ctx context.Context, f db.AnalyticsFilter) ([]db.ToolAnalyticsRow, error) {

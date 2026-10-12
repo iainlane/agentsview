@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -58,7 +59,14 @@ func (f *fakeSignalQuery) ToolCallsByPosition(
 	_ context.Context, positions []db.ToolCallPosition,
 ) ([]db.ToolCallSignalFact, error) {
 	f.requestedPositions = append([]db.ToolCallPosition(nil), positions...)
-	return f.callFacts, nil
+	// Like the real query, return only the stored facts at requested positions.
+	var facts []db.ToolCallSignalFact
+	for _, fact := range f.callFacts {
+		if slices.Contains(positions, db.ToolCallPosition{MessageOrdinal: fact.MessageOrdinal, CallIndex: fact.CallIndex}) {
+			facts = append(facts, fact)
+		}
+	}
+	return facts, nil
 }
 
 func (f *fakeSignalQuery) CallResultEvents(
@@ -1150,11 +1158,12 @@ func TestIncrementalMaintainerSequenceMetadataAndUnknown(t *testing.T) {
 			require.Len(t, delta.ToolObservations, 2)
 			assert.Equal(t, "unknown", *delta.ToolObservations[0].SequenceEnding)
 			assert.Equal(t, "unknown", *delta.ToolObservations[1].Outcome)
-			q.callFacts = []db.ToolCallSignalFact{{MessageOrdinal: 1, ToolName: tool, Category: tool, ResultContentLength: 7, EventStatus: "completed"}}
-			m.resultUpdates = []db.ToolCallResultUpdate{{Position: db.ToolCallPosition{MessageOrdinal: 1}}}
+			q.callFacts = []db.ToolCallSignalFact{{MessageOrdinal: 1, ToolName: tool, Category: tool, ResultContentLength: 7, EventStatus: "completed", ToolUseID: "late-call"}}
+			m.resultUpdates = []db.ToolCallResultUpdate{{ToolUseID: "late-call", Position: db.ToolCallPosition{MessageOrdinal: 1}}}
 			delta, err = m.MaintainTx(t.Context(), q)
 			require.NoError(t, err)
 			require.NotNil(t, delta)
+			assert.Equal(t, []db.ToolCallPosition{{MessageOrdinal: 1}}, q.requestedPositions)
 			assert.Equal(t, "unknown", *delta.ToolObservations[1].Outcome)
 			assert.Equal(t, "unknown", *delta.ToolObservations[0].SequenceEnding)
 			full, _ := computeSignalsAndSecrets(*q.sess, []db.Message{{Ordinal: 0, ToolCalls: []db.ToolCall{{ToolName: "Grep", Category: "Grep", ResultContent: "No matches found"}}}, {Ordinal: 1, ToolCalls: []db.ToolCall{{ToolName: tool, Category: tool, ResultContentLength: 7, ResultEvents: []db.ToolResultEvent{{Status: "completed", ContentLength: 7}}}}}})

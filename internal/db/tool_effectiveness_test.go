@@ -131,6 +131,12 @@ func TestToolEffectivenessMissingAndUnknownDenominators(t *testing.T) {
 	require.NotNil(t, row.RepeatRate)
 	assert.Zero(t, *row.RepeatRate)
 	assert.Nil(t, row.RecoveryRate)
+	// A repeat counts as evidence while its session's signals are current.
+	updateSignals(t, d, "unknown", SessionSignalUpdate{ToolObservations: []ToolObservation{{Outcome: "unknown", Repeat: "identical"}}, QualitySignals: QualitySignals{Version: CurrentQualitySignalVersion}})
+	evidence, err := d.GetAnalyticsSignalSessions(t.Context(), f, "tool_repeat_rate", 10)
+	require.NoError(t, err)
+	require.Len(t, evidence.Sessions, 1)
+	assert.Equal(t, "unknown", evidence.Sessions[0].SessionID)
 	require.NoError(t, d.Update(t.Context(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(t.Context(), `UPDATE sessions SET quality_signal_version=0 WHERE id='unknown'`)
 		return err
@@ -138,7 +144,7 @@ func TestToolEffectivenessMissingAndUnknownDenominators(t *testing.T) {
 	response, err = d.GetAnalyticsTools(t.Context(), f)
 	require.NoError(t, err)
 	assert.Equal(t, 1, response.ByTool[0].MissingCalls)
-	evidence, err := d.GetAnalyticsSignalSessions(t.Context(), f, "tool_repeat_rate", 10)
+	evidence, err = d.GetAnalyticsSignalSessions(t.Context(), f, "tool_repeat_rate", 10)
 	require.NoError(t, err)
 	assert.Empty(t, evidence.Sessions)
 }
@@ -267,4 +273,33 @@ func TestToolObservationDeltaPointUpdatesAndRollback(t *testing.T) {
 	assert.Equal(t, "open", *after[0].ToolCalls[0].SequenceEnding)
 	assert.Equal(t, "content", *after[1].ToolCalls[0].ObservedOutcome)
 	assert.Equal(t, before[2], after[2])
+}
+
+func TestBuildToolMetricEvidenceLinksOnlyStoredMessages(t *testing.T) {
+	counts := ToolEffectivenessCounts{EmptyCalls: 1}
+	for _, tc := range []struct {
+		name    string
+		rows    []ToolAnalyticsRow
+		ordinal *int
+		total   int
+	}{
+		{"missing message does not win", []ToolAnalyticsRow{
+			{ToolEffectivenessCounts: counts, SessionID: "s", ToolName: "Grep"},
+			{ToolEffectivenessCounts: counts, SessionID: "s", ToolName: "Grep", Ordinal: new(2)},
+		}, new(2), 2},
+		{"earliest stored message wins", []ToolAnalyticsRow{
+			{ToolEffectivenessCounts: counts, SessionID: "s", ToolName: "Grep", Ordinal: new(5)},
+			{ToolEffectivenessCounts: counts, SessionID: "s", ToolName: "Grep", Ordinal: new(3)},
+		}, new(3), 2},
+		{"no stored message has no link", []ToolAnalyticsRow{
+			{ToolEffectivenessCounts: counts, SessionID: "s", ToolName: "Grep"},
+		}, nil, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BuildToolMetricEvidence(tc.rows, "tool_empty_rate", "Grep", 0, 10)
+			require.Len(t, got.Sessions, 1)
+			assert.Equal(t, tc.ordinal, got.Sessions[0].MessageOrdinal)
+			assert.Equal(t, tc.total, got.Sessions[0].SignalTotal)
+		})
+	}
 }
