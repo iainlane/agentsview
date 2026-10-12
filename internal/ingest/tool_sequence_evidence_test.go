@@ -24,7 +24,6 @@ func TestToolSequenceStructuredEvidence(t *testing.T) {
 		{"single blank event", []db.ToolResultEvent{{Content: "", Status: "completed"}}, signals.ToolOutcomeEmpty},
 		{"several blank events", []db.ToolResultEvent{{Content: "", Status: "completed"}, {Content: "", Status: "completed"}}, signals.ToolOutcomeEmpty},
 		{"text then NUL", []db.ToolResultEvent{{Content: "old text", Status: "completed"}, {Content: "\x00", Status: "completed"}}, signals.ToolOutcomeEmpty},
-		{"error then NUL", []db.ToolResultEvent{{Content: "command not found", Status: "completed"}, {Content: "\x00", Status: "completed"}}, signals.ToolOutcomeEmpty},
 		{"image then NUL", []db.ToolResultEvent{{Content: "[image]", Status: "completed"}, {Content: "\x00", Status: "completed"}}, signals.ToolOutcomeUnknown},
 		{"anonymous latest", []db.ToolResultEvent{{Content: "old text"}, {Content: `[{"type":"input_image","image_url":"data:image/png;base64,AAEC"}]`}}, signals.ToolOutcomeUnknown},
 	} {

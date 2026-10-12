@@ -294,6 +294,39 @@ func TestResyncRecomputesStaleSourceMissingSignals(t *testing.T) {
 	}
 }
 
+// A copied session keeps its termination status, so the resync recompute still
+// treats a trailing failed sequence in a finished session as abandoned.
+func TestResyncKeepsArchivedTerminationForSequenceEndings(t *testing.T) {
+	e, database, root := newResyncSplitEngine(t)
+	for _, id := range []string{"orphan", "keep1"} {
+		session, err := database.GetSessionFull(t.Context(), id)
+		require.NoError(t, err)
+		session.TerminationStatus = new("clean")
+		require.NoError(t, database.UpsertSession(t.Context(), *session))
+		require.NoError(t, database.ReplaceSessionMessages(t.Context(), id, []db.Message{
+			{SessionID: id, Ordinal: 0, Role: "assistant", ToolCalls: []db.ToolCall{{ToolName: "Grep", Category: "Grep", ResultContent: "No matches found", ResultContentLength: 16}}},
+		}))
+		require.NoError(t, database.UpdateSessionSignals(t.Context(), id, db.SessionSignalUpdate{}))
+	}
+	require.NoError(t, database.SoftDeleteSession(t.Context(), "keep1"))
+	require.NoError(t, os.Remove(filepath.Join(root, "project", "orphan.jsonl")))
+
+	stats := e.ResyncAll(t.Context(), nil)
+	require.False(t, stats.Aborted, "warnings: %v", stats.Warnings)
+	for _, id := range []string{"orphan", "keep1"} {
+		session, err := database.GetSessionFull(t.Context(), id)
+		require.NoError(t, err)
+		assert.Equal(t, new("clean"), session.TerminationStatus, id)
+		assert.Equal(t, db.CurrentQualitySignalVersion, session.QualitySignalVersion, id)
+		messages, err := database.GetAllMessages(t.Context(), id)
+		require.NoError(t, err)
+		require.Len(t, messages, 1)
+		require.Len(t, messages[0].ToolCalls, 1)
+		assert.Equal(t, new("empty"), messages[0].ToolCalls[0].ObservedOutcome, id)
+		assert.Equal(t, new("abandoned"), messages[0].ToolCalls[0].SequenceEnding, id)
+	}
+}
+
 func TestResyncSignalRecomputeFailureKeepsOriginalArchive(t *testing.T) {
 	e, database, root := newResyncSplitEngine(t)
 	require.NoError(t, os.Remove(filepath.Join(root, "project", "orphan.jsonl")))

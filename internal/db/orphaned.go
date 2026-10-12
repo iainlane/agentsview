@@ -1969,7 +1969,7 @@ func orphanSessionCols(ctx context.Context, tx *sql.Tx) string {
 		"cwd", "git_branch", "source_session_id",
 		"source_version", "group_key", "transcript_fidelity", "parser_malformed_lines",
 		"is_truncated", "last_write_incremental",
-		"transcript_revision",
+		"termination_status", "transcript_revision",
 		"secret_leak_count", "secrets_rules_version",
 	} {
 		if oldDBHasColumn(ctx, tx, "sessions", c) {

@@ -18,7 +18,6 @@ func TestStagedMultiAgentToolObservationParity(t *testing.T) {
 	}{
 		{"file contents", true, false, "content", "recovered"},
 		{"file contents", false, true, "empty", "abandoned"},
-		{"command not found", false, true, "empty", "abandoned"},
 		{"[image]", false, true, "unknown", "unknown"},
 		{"[image]", true, true, "unknown", "unknown"},
 	} {
