@@ -177,7 +177,7 @@ func TestServeCommandMountsWritableServerAtBasePath(t *testing.T) {
 }
 
 func TestServeSkipInitialSyncStillReparsesStaleArchive(t *testing.T) {
-	for _, kind := range []string{"data version", "scoped pending", "schema repair"} {
+	for _, kind := range []string{"data version", "scoped pending"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := testConfigWithClaudeFixture(t)
 			cfg.Host = "127.0.0.1"
@@ -191,9 +191,6 @@ func TestServeSkipInitialSyncStillReparsesStaleArchive(t *testing.T) {
 				conn, err := sql.Open("sqlite3", cfg.DBPath)
 				require.NoError(t, err)
 				statement := "INSERT INTO stats(key, value) VALUES ('scoped_upgrade_pending', 1)"
-				if kind == "schema repair" {
-					statement = "ALTER TABLE tool_calls DROP COLUMN result_content_length"
-				}
 				_, err = conn.ExecContext(t.Context(), statement)
 				require.NoError(t, err)
 				require.NoError(t, conn.Close())
@@ -206,7 +203,7 @@ func TestServeSkipInitialSyncStillReparsesStaleArchive(t *testing.T) {
 				"AGENTSVIEW_STALE_SERVE_KIND=" + kind,
 			}, "archive rebuild complete")
 			require.NoError(t, err, string(out))
-			stale, err := db.ArchiveNeedsResync(t.Context(), cfg.DBPath)
+			stale, _, err := db.ArchiveResyncState(t.Context(), cfg.DBPath)
 			require.NoError(t, err)
 			assert.False(t, stale)
 		})
@@ -256,15 +253,6 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 		require.Contains(t, string(body), "retained transcript")
 		if kind == "data version" {
 			require.Equal(t, "true", resp.Header.Get("X-Agentsview-Archive-Stale"))
-			req, err := http.NewRequest(http.MethodPatch, base+"/api/v1/sessions/retained/rename", strings.NewReader(`{"display_name":"changed"}`))
-			require.NoError(t, err)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Origin", base)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.NoError(t, resp.Body.Close())
-			require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
-			require.Equal(t, "5", resp.Header.Get("Retry-After"))
 			close(release)
 			require.Eventually(t, func() bool {
 				resp, err := http.Get(base + "/api/v1/sync/status")

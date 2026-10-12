@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +19,6 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
-	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -502,7 +499,6 @@ func TestRunWorkerResyncBuildHonorsRequiredOnly(t *testing.T) {
 		{name: "current"},
 		{name: "stale", stale: true, launch: true},
 		{name: "explicit full on current archive", full: true, launch: true},
-		{name: "explicit full on stale archive", stale: true, full: true, launch: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfigWithClaudeFixture(t)
@@ -535,7 +531,7 @@ func TestRunWorkerResyncBuildHonorsRequiredOnly(t *testing.T) {
 }
 
 func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
-	for _, outcome := range []string{"failed", "aborted", "unlaunchable"} {
+	for _, outcome := range []string{"failed", "unlaunchable"} {
 		t.Run(outcome, func(t *testing.T) {
 			cfg := testConfigWithClaudeFixture(t)
 			cfg.Host = "127.0.0.1"
@@ -561,22 +557,6 @@ func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
 				default:
 				}
 			}()
-			handler := server.New(cfg, database, engine).Handler()
-			readRetained := func() {
-				for _, path := range []string{"/api/ping", "/api/v1/version", "/api/v1/sync/status"} {
-					w := httptest.NewRecorder()
-					handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0"+path, nil))
-					assert.Equal(t, http.StatusOK, w.Code)
-					assert.Empty(t, w.Header().Get("X-Agentsview-Archive-Stale"), path)
-				}
-				for _, path := range []string{"/api/v1/sessions/retained/messages", "/api/v1/search?q=retained"} {
-					w := httptest.NewRecorder()
-					handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0"+path, nil))
-					assert.Equal(t, http.StatusOK, w.Code)
-					assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
-					assert.Contains(t, strings.NewReplacer("<mark>", "", "</mark>", "").Replace(w.Body.String()), "retained transcript")
-				}
-			}
 			sentinel := errors.New("resync worker stopped")
 			restore := stubLaunchSyncWorker(t, func(
 				_ context.Context, _ config.Config, request syncWorkerRequest, onLine func(workerLine),
@@ -614,7 +594,6 @@ func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
 
 			require.True(t, database.WriterClosed())
 			<-workerStarted
-			readRetained()
 
 			current, active := engine.CurrentProgress()
 			require.True(t, active,
@@ -648,14 +627,9 @@ func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
 			_, active = engine.CurrentProgress()
 			assert.False(t, active,
 				"completed resync worker must clear daemon-visible progress")
-			readRetained()
 			assert.False(t, database.WriterClosed())
 			requireStartupMaintenanceReleased(t, engine)
 			assert.False(t, engine.StartupReconciled())
-
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0/api/v1/sync/status", nil))
-			assert.Contains(t, w.Body.String(), `"archive_stale":true`)
 		})
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 func reflectedFieldValue(v any, name string) reflect.Value {
@@ -1254,6 +1255,48 @@ func TestOpenAcceptsArchiveUserVersion111(t *testing.T) {
 	page, err := d2.ListSessions(t.Context(), SessionFilter{Limit: 100})
 	requireNoError(t, err, "list sessions")
 	require.Len(t, page.Sessions, 1)
+}
+
+func TestArchiveResyncState(t *testing.T) {
+	for _, tc := range []struct {
+		name                                      string
+		version                                   int
+		pending, repair, archiveOnly, needs, full bool
+	}{
+		{name: "current", version: dataVersion},
+		{name: "data stale", version: 129, needs: true, full: true},
+		{name: "scoped version", version: dataVersion - 1, needs: true},
+		{name: "scoped pending", version: dataVersion, pending: true, needs: true},
+		{name: "schema repair", version: dataVersion, repair: true, needs: true},
+		{name: "archive only", version: dataVersion - 1, archiveOnly: true, needs: true, full: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(InstallDataVersionScopesForTest(map[int][]parser.AgentType{dataVersion: {parser.AgentClaude}}))
+			d := testDB(t)
+			require.NoError(t, d.Update(t.Context(), func(tx *sql.Tx) error {
+				_, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", tc.version))
+				if err != nil {
+					return err
+				}
+				if tc.pending {
+					_, err = tx.Exec("INSERT INTO stats(key,value) VALUES ('scoped_upgrade_pending',1)")
+				}
+				if tc.repair {
+					_, err = tx.Exec("ALTER TABLE tool_calls DROP COLUMN result_content_length")
+				}
+				return err
+			}))
+			if tc.archiveOnly {
+				require.NoError(t, d.EnableArchiveOnly(t.Context()))
+			}
+			path := d.Path()
+			require.NoError(t, d.Close())
+			needs, full, err := ArchiveResyncState(t.Context(), path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.needs, needs)
+			assert.Equal(t, tc.full, full)
+		})
+	}
 }
 
 func TestOpenProbeErrorPropagates(t *testing.T) {

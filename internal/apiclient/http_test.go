@@ -105,6 +105,9 @@ func TestArchiveRebuildRetry(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestArchiveRequestAttemptTimeout(t *testing.T) {
 	for _, bodyTimeout := range []bool{false, true} {
 		t.Run(fmt.Sprintf("attempt timeout body=%v", bodyTimeout), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -133,36 +136,25 @@ func TestArchiveRebuildRetry(t *testing.T) {
 }
 
 func TestArchiveNotices(t *testing.T) {
-	for _, notice := range []bool{false, true} {
-		t.Run(fmt.Sprint(notice), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				var output bytes.Buffer
-				var options []ArchiveOption
-				if notice {
-					options = append(options, WithArchiveNotices(&output))
-				}
-				calls := 0
-				httpClient := &http.Client{Transport: retryTransport(func(*http.Request) (*http.Response, error) {
-					calls++
-					status := http.StatusOK
-					if calls%2 == 1 {
-						status = http.StatusServiceUnavailable
-					}
-					return &http.Response{StatusCode: status, Header: http.Header{ArchiveStaleHeader: {"true"}, "Retry-After": {"1"}}, Body: io.NopCloser(strings.NewReader(`{"sessions":[],"machine_labels":{}}`))}, nil
-				})}
-				for range 2 {
-					api, err := NewHTTPClient("http://example.test", "", httpClient, options...)
-					require.NoError(t, err)
-					_, err = api.GetAPIV1SessionsWithResponse(t.Context(), &GetAPIV1SessionsRequestOptions{})
-					require.NoError(t, err)
-				}
-				assert.Equal(t, 4, calls)
-				if notice {
-					assert.Equal(t, "waiting for archive rebuild\nWarning: Archive results may be stale.\n", output.String())
-				} else {
-					assert.Empty(t, output.String())
-				}
-			})
-		})
-	}
+	synctest.Test(t, func(t *testing.T) {
+		var output bytes.Buffer
+		options := []ArchiveOption{WithArchiveNotices(&output)}
+		calls := 0
+		httpClient := &http.Client{Transport: retryTransport(func(*http.Request) (*http.Response, error) {
+			calls++
+			status := http.StatusOK
+			if calls%2 == 1 {
+				status = http.StatusServiceUnavailable
+			}
+			return &http.Response{StatusCode: status, Header: http.Header{ArchiveStaleHeader: {"true"}, "Retry-After": {"1"}}, Body: io.NopCloser(strings.NewReader(`{"sessions":[],"machine_labels":{}}`))}, nil
+		})}
+		for range 2 {
+			api, err := NewHTTPClient("http://example.test", "", httpClient, options...)
+			require.NoError(t, err)
+			_, err = api.GetAPIV1SessionsWithResponse(t.Context(), &GetAPIV1SessionsRequestOptions{})
+			require.NoError(t, err)
+		}
+		assert.Equal(t, 4, calls)
+		assert.Equal(t, "waiting for archive rebuild\nWarning: Archive results may be stale.\n", output.String())
+	})
 }

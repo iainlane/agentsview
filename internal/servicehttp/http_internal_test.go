@@ -27,6 +27,9 @@ func TestNewHTTPBackendUsesLongRunningClient(t *testing.T) {
 
 	assert.Zero(t, backend.client.Timeout)
 	assert.Zero(t, backend.longRunningClient.Timeout)
+}
+
+func TestImportRecallEntriesReplay(t *testing.T) {
 	for _, replay := range []bool{true, false} {
 		t.Run(map[bool]string{true: "seekable import retries", false: "streaming import fails without replay"}[replay], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

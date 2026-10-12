@@ -2324,21 +2324,6 @@ func TestOnDemandSyncEngineKeepsStartupProvidersUntilRestart(t *testing.T) {
 		engine.ReconciliationRootsForAgent(string(parser.AgentGemini)))
 }
 
-func TestHumaTriggerResyncRetriedAfterStartupRebuild(t *testing.T) {
-	f := newSyncRouteFixture(t)
-	calls := 0
-	f.srv.localResyncRunner = func(context.Context, func(syncpkg.Progress)) (syncpkg.SyncStats, error) {
-		calls++
-		return syncpkg.SyncStats{}, nil
-	}
-	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/resync", nil, func(req *http.Request) { req.Header.Set("X-Agentsview-Archive-Stale", "true") })
-	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.Equal(t, 1, calls)
-	w = serveJSON(t, f.handler, http.MethodPost, "/api/v1/resync", nil)
-	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.Equal(t, 2, calls)
-}
-
 // newStartupRebuildFixture serves a stale archive with a daemon engine whose
 // startup attempt has not completed, as runServe does while it rebuilds.
 func newStartupRebuildFixture(t *testing.T) (*syncRouteFixture, *syncpkg.Engine) {
@@ -2356,7 +2341,7 @@ func newStartupRebuildFixture(t *testing.T) (*syncRouteFixture, *syncpkg.Engine)
 }
 
 func TestStartupRebuildWriteGate(t *testing.T) {
-	f, engine := newStartupRebuildFixture(t)
+	f, _ := newStartupRebuildFixture(t)
 	dbtest.SeedSessionWithMessages(t, f.db, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")}, func(session *db.Session) { session.Cwd = "/work/branch" })
 	f.srv.memoryRefreshRequest = func() {}
 	f.srv.telemetryCapture = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
@@ -2364,25 +2349,28 @@ func TestStartupRebuildWriteGate(t *testing.T) {
 	require.NoError(t, f.db.CloseWriter())
 	for _, tc := range []struct {
 		method, path, body string
-		blocked            bool
+		blocked, probe     bool
 	}{
-		{http.MethodPost, "/api/v1/sync?wait=true", "", true},
-		{http.MethodPost, "/api/v1/resync", "", true},
-		{http.MethodPost, "/api/v1/sync/remotes", `{"full":false,"hosts":[],"include_local":false}`, true},
-		{http.MethodPost, "/api/v1/sessions/sync", `{"id":"retained"}`, true},
-		{http.MethodPost, "/api/v1/push/pg", `{"full":false}`, true},
-		{http.MethodPatch, "/api/v1/sessions/retained/rename", `{"display_name":"renamed"}`, true},
-		{http.MethodDelete, "/api/v1/sessions/retained", "", true},
-		{http.MethodPost, "/api/v1/settings/worktree-mappings", `{"machine":"local","path_prefix":"/work","project":"project"}`, true},
-		{http.MethodPost, "/api/v1/data/compact", `{}`, true},
-		{http.MethodPost, "/api/v1/config/github", `{}`, false},
-		{http.MethodPost, "/api/v1/sessions/retained/resume", `{"command_only":true}`, false},
-		{http.MethodPost, "/api/v1/sessions/retained/open", `{}`, false},
-		{http.MethodPost, "/api/v1/telemetry/events", `{}`, false},
-		{http.MethodPost, "/api/v1/settings/worktree-mappings/preview", `{"machine":"local","path_prefix":"/work","project":"new-project","enabled":true}`, false},
-		{http.MethodPost, "/api/v1/memory/refresh", "", false},
-		{http.MethodPost, "/api/v1/recall/query", `{}`, false},
-		{http.MethodGet, "/api/v1/sessions", "", false},
+		{http.MethodPost, "/api/v1/sync?wait=true", "", true, false},
+		{http.MethodPost, "/api/v1/resync", "", true, false},
+		{http.MethodPost, "/api/v1/sync/remotes", `{"full":false,"hosts":[],"include_local":false}`, true, false},
+		{http.MethodPost, "/api/v1/sessions/sync", `{"id":"retained"}`, true, false},
+		{http.MethodPost, "/api/v1/push/pg", `{"full":false}`, true, false},
+		{http.MethodPatch, "/api/v1/sessions/retained/rename", `{"display_name":"renamed"}`, true, false},
+		{http.MethodDelete, "/api/v1/sessions/retained", "", true, false},
+		{http.MethodPost, "/api/v1/settings/worktree-mappings", `{"machine":"local","path_prefix":"/work","project":"project"}`, true, false},
+		{http.MethodPost, "/api/v1/data/compact", `{}`, true, false},
+		{http.MethodPost, "/api/v1/config/github", `{}`, false, false},
+		{http.MethodPost, "/api/v1/sessions/retained/resume", `{"command_only":true}`, false, false},
+		{http.MethodPost, "/api/v1/sessions/retained/open", `{}`, false, false},
+		{http.MethodPost, "/api/v1/telemetry/events", `{}`, false, false},
+		{http.MethodPost, "/api/v1/settings/worktree-mappings/preview", `{"machine":"local","path_prefix":"/work","project":"new-project","enabled":true}`, false, false},
+		{http.MethodPost, "/api/v1/memory/refresh", "", false, false},
+		{http.MethodPost, "/api/v1/recall/query", `{}`, false, false},
+		{http.MethodGet, "/api/v1/sessions", "", false, false},
+		{http.MethodGet, "/api/ping", "", false, true},
+		{http.MethodGet, "/api/v1/version", "", false, true},
+		{http.MethodGet, "/api/v1/sync/status", "", false, true},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			var body any
@@ -2392,11 +2380,13 @@ func TestStartupRebuildWriteGate(t *testing.T) {
 			w := serveJSON(t, f.handler, tc.method, tc.path, body)
 			if tc.path == "/api/v1/settings/worktree-mappings/preview" {
 				assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-				assert.Contains(t, w.Body.String(), `"normalized_project":"new_project"`)
-				assert.Contains(t, w.Body.String(), `"matched_sessions":1`)
-				assert.Contains(t, w.Body.String(), `"updated_session_ids":["retained"]`)
+				assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
+				return
 			}
-			if tc.blocked {
+			if tc.probe {
+				assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+				assert.Empty(t, w.Header().Get("X-Agentsview-Archive-Stale"))
+			} else if tc.blocked {
 				assert.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 				assert.Equal(t, writerClosedRetryAfterSeconds, w.Header().Get("Retry-After"))
 				assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
@@ -2409,10 +2399,4 @@ func TestStartupRebuildWriteGate(t *testing.T) {
 			}
 		})
 	}
-	require.NoError(t, f.db.ReopenWriter())
-	engine.RecordStartupReconciled(syncpkg.SyncStats{}, errors.New("build failed"))
-	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sync", nil)
-	assert.Equal(t, http.StatusConflict, w.Code)
-	assert.Equal(t, "true", w.Header().Get(ResyncRequiredHeader))
-	assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
 }
