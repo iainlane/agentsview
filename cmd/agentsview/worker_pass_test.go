@@ -146,9 +146,15 @@ func TestRunWorkerResyncBuildRecoversWriterWhenCloseFails(t *testing.T) {
 	})
 	defer restoreLaunch()
 
+	startupReady := make(chan struct{})
 	_, err, spawnFailed := runWorkerResyncBuild(
-		t.Context(), t.Context(), cfg, engine, database, nil, true,
+		t.Context(), t.Context(), cfg, engine, database, nil, true, startupReady,
 	)
+	select {
+	case <-startupReady:
+	default:
+		require.FailNow(t, "early failure must release HTTP startup")
+	}
 	require.False(t, spawnFailed,
 		"a close failure is not a spawn failure and must not trigger the in-process fallback")
 	require.ErrorContains(t, err, "close writer for resync build")
@@ -490,11 +496,13 @@ func TestRunForegroundWorkerSyncPassPublishesAndClearsWorkerProgress(
 
 func TestRunWorkerResyncBuildHonorsRequiredOnly(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		stale bool
+		name                string
+		stale, full, launch bool
 	}{
 		{name: "current"},
-		{name: "stale", stale: true},
+		{name: "stale", stale: true, launch: true},
+		{name: "explicit full on current archive", full: true, launch: true},
+		{name: "explicit full on stale archive", stale: true, full: true, launch: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfigWithClaudeFixture(t)
@@ -513,13 +521,13 @@ func TestRunWorkerResyncBuildHonorsRequiredOnly(t *testing.T) {
 				return workerResult{}, sentinel
 			})
 			defer restore()
-			_, err, spawnFailed := runWorkerResyncBuild(t.Context(), t.Context(), cfg, engine, database, nil, false)
-			if tc.stale {
+			_, err, spawnFailed := runWorkerResyncBuild(t.Context(), t.Context(), cfg, engine, database, nil, tc.full, nil)
+			if tc.launch {
 				require.ErrorIs(t, err, sentinel)
 			} else {
 				require.NoError(t, err)
 			}
-			assert.Equal(t, tc.stale, launched)
+			assert.Equal(t, tc.launch, launched)
 			assert.False(t, spawnFailed)
 			assert.False(t, database.WriterClosed())
 		})
@@ -593,17 +601,19 @@ func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
 				spawnFailed bool
 			}
 			done := make(chan buildResult, 1)
+			startupReady := make(chan struct{})
 			go func() {
-				_, err, spawnFailed := runWorkerResyncBuild(t.Context(), t.Context(), cfg, engine, database, nil, false, func() {})
+				_, err, spawnFailed := runWorkerResyncBuild(t.Context(), t.Context(), cfg, engine, database, nil, false, startupReady)
 				done <- buildResult{err: err, spawnFailed: spawnFailed}
 			}()
 			select {
-			case <-workerStarted:
+			case <-startupReady:
 			case <-time.After(time.Second):
 				require.FailNow(t, "resync worker did not start")
 			}
 
 			require.True(t, database.WriterClosed())
+			<-workerStarted
 			readRetained()
 
 			current, active := engine.CurrentProgress()
@@ -1326,7 +1336,7 @@ func TestRunWorkerResyncBuildDropsTombstonesWhenSwapFailsBeforeInstall(
 	defer restore()
 
 	result, err, spawnFailed := runWorkerResyncBuild(
-		t.Context(), t.Context(), cfg, engine, database, nil, true,
+		t.Context(), t.Context(), cfg, engine, database, nil, true, nil,
 	)
 	require.False(t, spawnFailed)
 	require.ErrorContains(t, err, "swap resync database")
@@ -1381,7 +1391,7 @@ func TestWorkerResyncNotifiesInstalledRepairAfterCancellation(t *testing.T) {
 		return result, nil
 	})
 	defer restore()
-	result, err, spawnFailed := runWorkerResyncBuild(ctx, t.Context(), cfg, engine, database, nil, true)
+	result, err, spawnFailed := runWorkerResyncBuild(ctx, t.Context(), cfg, engine, database, nil, true, nil)
 	require.False(t, spawnFailed)
 	require.ErrorIs(t, err, context.Canceled)
 	require.ErrorContains(t, err, "reloading skip cache after swap")

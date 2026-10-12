@@ -435,10 +435,6 @@ func (s *Server) runResyncWithFallback(
 	ctx context.Context, engine *syncpkg.Engine,
 	progress func(syncpkg.Progress),
 ) (syncpkg.SyncStats, error) {
-	info, _ := ctx.Value(ctxKeyHumaRequestInfo).(requestInfo)
-	if info.ArchiveRetry && !s.archiveStale() {
-		return syncpkg.SyncStats{}, nil
-	}
 	if s.localResyncRunner != nil {
 		// The worker-backed runner builds the replacement archive in a child
 		// process behind a write barrier and swaps it in. It only returns an

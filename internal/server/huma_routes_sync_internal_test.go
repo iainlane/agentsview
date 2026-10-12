@@ -2333,10 +2333,10 @@ func TestHumaTriggerResyncRetriedAfterStartupRebuild(t *testing.T) {
 	}
 	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/resync", nil, func(req *http.Request) { req.Header.Set("X-Agentsview-Archive-Stale", "true") })
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.Zero(t, calls)
+	assert.Equal(t, 1, calls)
 	w = serveJSON(t, f.handler, http.MethodPost, "/api/v1/resync", nil)
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.Equal(t, 1, calls)
+	assert.Equal(t, 2, calls)
 }
 
 // newStartupRebuildFixture serves a stale archive with a daemon engine whose
@@ -2357,7 +2357,7 @@ func newStartupRebuildFixture(t *testing.T) (*syncRouteFixture, *syncpkg.Engine)
 
 func TestStartupRebuildWriteGate(t *testing.T) {
 	f, engine := newStartupRebuildFixture(t)
-	dbtest.SeedSessionWithMessages(t, f.db, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")})
+	dbtest.SeedSessionWithMessages(t, f.db, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")}, func(session *db.Session) { session.Cwd = "/work/branch" })
 	f.srv.memoryRefreshRequest = func() {}
 	f.srv.telemetryCapture = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
 	f.srv.registerTelemetryCaptureRoute()
@@ -2379,7 +2379,7 @@ func TestStartupRebuildWriteGate(t *testing.T) {
 		{http.MethodPost, "/api/v1/sessions/retained/resume", `{"command_only":true}`, false},
 		{http.MethodPost, "/api/v1/sessions/retained/open", `{}`, false},
 		{http.MethodPost, "/api/v1/telemetry/events", `{}`, false},
-		{http.MethodPost, "/api/v1/settings/worktree-mappings/preview", `{}`, false},
+		{http.MethodPost, "/api/v1/settings/worktree-mappings/preview", `{"machine":"local","path_prefix":"/work","project":"new-project","enabled":true}`, false},
 		{http.MethodPost, "/api/v1/memory/refresh", "", false},
 		{http.MethodPost, "/api/v1/recall/query", `{}`, false},
 		{http.MethodGet, "/api/v1/sessions", "", false},
@@ -2390,6 +2390,12 @@ func TestStartupRebuildWriteGate(t *testing.T) {
 				require.NoError(t, json.Unmarshal([]byte(tc.body), &body))
 			}
 			w := serveJSON(t, f.handler, tc.method, tc.path, body)
+			if tc.path == "/api/v1/settings/worktree-mappings/preview" {
+				assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+				assert.Contains(t, w.Body.String(), `"normalized_project":"new_project"`)
+				assert.Contains(t, w.Body.String(), `"matched_sessions":1`)
+				assert.Contains(t, w.Body.String(), `"updated_session_ids":["retained"]`)
+			}
 			if tc.blocked {
 				assert.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 				assert.Equal(t, writerClosedRetryAfterSeconds, w.Header().Get("Retry-After"))

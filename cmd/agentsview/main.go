@@ -15,7 +15,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	stdsync "sync"
 	"syscall"
 	"testing"
 	"time"
@@ -216,11 +215,11 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 	startupRebuild := false
 	if !cfg.NoSync {
 		needsResync, fullRebuild, err := db.ArchiveResyncState(ctx, cfg.DBPath)
-		if err != nil {
+		if err != nil && opts.SkipInitialSync {
 			fatal("checking archive before startup: %v", err)
 		}
 		// Scoped upgrades and schema repairs finish before startup publishes readiness.
-		startupRebuild = fullRebuild
+		startupRebuild = err == nil && fullRebuild
 		if opts.SkipInitialSync {
 			opts.SkipInitialSync = !needsResync
 		}
@@ -384,19 +383,17 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 		}()
 		startAudit = func() {
 			auditStarted = true
-			var ready []func()
-			barrierReady := make(chan struct{})
+			var startupReady chan struct{}
 			if startupRebuild {
-				var once stdsync.Once
-				ready = append(ready, func() { once.Do(func() { close(barrierReady) }) })
+				startupReady = make(chan struct{})
 			}
 			go func() {
 				defer close(auditDone)
-				startArchiveAudit(auditCtx, cfg, engine, database, writeLock, idleTracker, emitter, ready...)
+				startArchiveAudit(auditCtx, cfg, engine, database, writeLock, idleTracker, emitter, startupReady)
 			}()
 			if startupRebuild {
 				select {
-				case <-barrierReady:
+				case <-startupReady:
 				case <-ctx.Done():
 				}
 			}
@@ -1139,7 +1136,7 @@ func newForegroundResyncRunner(
 	) (sync.SyncStats, error) {
 		if !testing.Testing() {
 			result, err, spawnFailed := runWorkerResyncBuild(
-				ctx, daemonCtx, cfg, engine, database, progress, true,
+				ctx, daemonCtx, cfg, engine, database, progress, true, nil,
 			)
 			if !spawnFailed {
 				if result.Status == "aborted" && ctx.Err() == nil {
@@ -1235,19 +1232,21 @@ func runWorkerResyncBuild(
 	database *db.DB,
 	progress func(sync.Progress),
 	full bool,
-	ready ...func(),
+	startupReady chan struct{},
 ) (workerResult, error, bool) {
 	var result workerResult
 	var launchErr error
 	var doneStats sync.SyncStats
-	requiredOnly := !full || database.NeedsResync()
-	defer func() {
-		for _, notify := range ready {
-			notify()
+	startup := startupReady != nil
+	notifyReady := func() {
+		if startupReady != nil {
+			close(startupReady)
+			startupReady = nil
 		}
-	}()
+	}
+	defer notifyReady()
 	barrierErr := engine.RunExclusive(func() (err error) {
-		if requiredOnly && !database.NeedsResync() {
+		if !full && !database.NeedsResync() {
 			return nil
 		}
 		engine.UpdateProgress(sync.Progress{
@@ -1269,9 +1268,7 @@ func runWorkerResyncBuild(
 		); cerr != nil {
 			return cerr
 		}
-		for _, notify := range ready {
-			notify()
-		}
+		notifyReady()
 		result, launchErr = launchSyncWorker(ctx, cfg, syncWorkerRequest{Mode: "resync-build"}, relay)
 		if launchErr != nil {
 			if result.Stats != nil {
@@ -1340,7 +1337,7 @@ func runWorkerResyncBuild(
 	})
 	if doneStats.ArchiveRebuilt {
 		engine.FinishStartupReconciled(doneStats)
-	} else if len(ready) > 0 {
+	} else if startup {
 		engine.RecordStartupReconciled(statsFromWorkerResult(result), barrierErr)
 	}
 	if barrierErr != nil {
@@ -3037,13 +3034,13 @@ func startArchiveAudit(
 	lock *writeOwnerLock,
 	idleTracker *server.IdleTracker,
 	emitter sync.Emitter,
-	ready ...func(),
+	startupReady chan struct{},
 ) {
 	first := archiveAuditInterval
 	if database.NeedsResync() {
 		first = archiveAuditRetryInitial
 	}
-	if len(ready) > 0 {
+	if startupReady != nil {
 		first = 0
 	}
 	runArchiveAuditLoop(
@@ -3061,9 +3058,9 @@ func startArchiveAudit(
 		},
 		func(ctx context.Context) bool {
 			return runArchiveAuditAttempt(ctx, idleTracker, func(ctx context.Context) error {
-				firstReady := ready
-				ready = nil
-				return runArchiveAudit(ctx, cfg, engine, database, lock, emitter, firstReady...)
+				firstReady := startupReady
+				startupReady = nil
+				return runArchiveAudit(ctx, cfg, engine, database, lock, emitter, firstReady)
 			})
 		},
 	)
@@ -3136,10 +3133,10 @@ func runArchiveAudit(
 	database *db.DB,
 	lock *writeOwnerLock,
 	emitter sync.Emitter,
-	ready ...func(),
+	startupReady chan struct{},
 ) error {
 	if database.NeedsResync() {
-		_, err, _ := runWorkerResyncBuild(ctx, ctx, cfg, engine, database, nil, false, ready...)
+		_, err, _ := runWorkerResyncBuild(ctx, ctx, cfg, engine, database, nil, false, startupReady)
 		if err != nil {
 			return err
 		}
@@ -3148,8 +3145,8 @@ func runArchiveAudit(
 		}
 		return nil
 	}
-	for _, notify := range ready {
-		notify()
+	if startupReady != nil {
+		close(startupReady)
 	}
 	result, err := runWorkerWritePass(
 		ctx, ctx, cfg, engine, database, lock, "audit", nil,

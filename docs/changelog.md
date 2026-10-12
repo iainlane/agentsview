@@ -9,11 +9,10 @@ The latest release is
 
 ## Unreleased
 
-- Browse and search the retained archive during full parser rebuilds. Results
-  show a stale warning, and CLI writes wait until rebuilding finishes.
-
 **New features**
 
+- Browse and search the retained archive during full parser rebuilds. Results
+  show a stale warning, and CLI writes wait until rebuilding finishes.
 - Sync Claude.ai chats from the desktop or Chrome Import dialog without
   downloading an export. Later runs fetch new or changed chats, including branch
   switches. Run `agentsview chrome setup` once and load the printed folder in

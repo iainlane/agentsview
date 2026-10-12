@@ -131,9 +131,8 @@ func configureHuma() {
 }
 
 type requestInfo struct {
-	RemoteAddr   string
-	Forwarded    bool
-	ArchiveRetry bool
+	RemoteAddr string
+	Forwarded  bool
 }
 
 //nolint:recvcheck // Huma discovers Schema on values and mutates parameters through pointers.
@@ -193,8 +192,7 @@ const ctxKeyHumaRequestInfo contextKey = 100
 
 func humaRequestInfoMiddleware(ctx huma.Context, next func(huma.Context)) {
 	info := requestInfo{
-		RemoteAddr:   ctx.RemoteAddr(),
-		ArchiveRetry: ctx.Header("X-Agentsview-Archive-Stale") == "true",
+		RemoteAddr: ctx.RemoteAddr(),
 		Forwarded: ctx.Header("X-Forwarded-For") != "" ||
 			ctx.Header("X-Real-IP") != "" ||
 			ctx.Header("Forwarded") != "",
@@ -521,7 +519,7 @@ func writerClosedError() error {
 	return huma.ErrorWithHeaders(
 		apiError(
 			http.StatusServiceUnavailable,
-			"archive is briefly read-only for a maintenance pass; retry shortly",
+			"archive is read-only while it rebuilds",
 		),
 		http.Header{"Retry-After": []string{writerClosedRetryAfterSeconds}},
 	)

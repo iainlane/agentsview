@@ -60,12 +60,16 @@ func TrackArchiveFreshness(ctx context.Context, onStale func()) (context.Context
 
 // ObserveArchiveFreshness records freshness for successful raw HTTP responses.
 func ObserveArchiveFreshness(ctx context.Context, response *http.Response) {
-	if response == nil || response.StatusCode < 200 || response.StatusCode >= 300 || response.Header.Get(ArchiveStaleHeader) != "true" {
+	if !successfulStaleResponse(response) {
 		return
 	}
 	if freshness, ok := ctx.Value(archiveFreshnessKey{}).(*archiveFreshness); ok && freshness.stale.CompareAndSwap(false, true) && freshness.onStale != nil {
 		freshness.onStale()
 	}
+}
+
+func successfulStaleResponse(response *http.Response) bool {
+	return response != nil && response.StatusCode >= 200 && response.StatusCode < 300 && response.Header.Get(ArchiveStaleHeader) == "true"
 }
 
 // ArchiveOption enables archive notices for an HTTP client.
@@ -90,10 +94,14 @@ func NewArchiveHTTPClient(client *http.Client, options ...ArchiveOption) *http.C
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	if _, installed := base.(*archiveTransport); installed && len(options) == 0 {
-		return &copy
+	transport := &archiveTransport{base: base, attemptTimeout: copy.Timeout}
+	if installed, ok := base.(*archiveTransport); ok {
+		*transport = *installed
+		if copy.Timeout > 0 {
+			transport.attemptTimeout = copy.Timeout
+		}
 	}
-	transport := &archiveTransport{base: base}
+	copy.Timeout = 0
 	for _, option := range options {
 		option(transport)
 	}
@@ -104,16 +112,30 @@ func NewArchiveHTTPClient(client *http.Client, options ...ArchiveOption) *http.C
 type archiveTransport struct {
 	base            http.RoundTripper
 	onWait, onStale func()
+	attemptTimeout  time.Duration
 }
 
 func (t *archiveTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	for {
-		response, err := t.base.RoundTrip(req)
+		attempt := req
+		var cancel context.CancelFunc
+		if t.attemptTimeout > 0 {
+			var ctx context.Context
+			ctx, cancel = context.WithTimeout(req.Context(), t.attemptTimeout)
+			attempt = req.Clone(ctx)
+		}
+		response, err := t.base.RoundTrip(attempt)
 		if err != nil {
+			if cancel != nil {
+				cancel()
+			}
 			return response, err
 		}
+		if cancel != nil {
+			response.Body = &attemptBody{ReadCloser: response.Body, cancel: cancel}
+		}
 		ObserveArchiveFreshness(req.Context(), response)
-		if response.StatusCode >= 200 && response.StatusCode < 300 && response.Header.Get(ArchiveStaleHeader) == "true" && t.onStale != nil {
+		if successfulStaleResponse(response) && t.onStale != nil {
 			t.onStale()
 		}
 		delay := httputil.ParseRetryAfter(response.Header.Get("Retry-After"))
@@ -132,7 +154,6 @@ func (t *archiveTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		case <-timer.C:
 		}
 		req = req.Clone(req.Context())
-		req.Header.Set(ArchiveStaleHeader, "true")
 		if req.GetBody != nil {
 			req.Body, err = req.GetBody()
 			if err != nil {
@@ -140,4 +161,23 @@ func (t *archiveTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			}
 		}
 	}
+}
+
+type attemptBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *attemptBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.cancel()
+	}
+	return n, err
+}
+
+func (b *attemptBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }

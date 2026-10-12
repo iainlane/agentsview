@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -43,8 +44,12 @@ func TestArchiveRebuildRetry(t *testing.T) {
 				defer cancel()
 				calls := 0
 				start := time.Now()
-				client := &http.Client{Transport: retryTransport(func(req *http.Request) (*http.Response, error) {
+				client := &http.Client{Timeout: 100 * time.Millisecond, Transport: retryTransport(func(req *http.Request) (*http.Response, error) {
 					calls++
+					deadline, ok := req.Context().Deadline()
+					require.True(t, ok)
+					assert.Equal(t, 100*time.Millisecond, time.Until(deadline))
+					assert.Empty(t, req.Header.Get(ArchiveStaleHeader))
 					assert.Equal(t, http.MethodPost, req.Method)
 					assert.Equal(t, "/api/v1/sync", req.URL.Path)
 					body, err := io.ReadAll(req.Body)
@@ -67,6 +72,8 @@ func TestArchiveRebuildRetry(t *testing.T) {
 					}
 					return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader("result"))}, nil
 				})}
+				client = NewArchiveHTTPClient(client)
+				client.Timeout = 100 * time.Millisecond
 				req, err := http.NewRequest(http.MethodPost, "http://example.test/api/v1/sync", strings.NewReader(`{"full":true}`))
 				require.NoError(t, err)
 				if !tc.replay {
@@ -95,6 +102,31 @@ func TestArchiveRebuildRetry(t *testing.T) {
 				body, err := io.ReadAll(response.Body)
 				require.NoError(t, err)
 				assert.Equal(t, "result", string(body))
+			})
+		})
+	}
+	for _, bodyTimeout := range []bool{false, true} {
+		t.Run(fmt.Sprintf("attempt timeout body=%v", bodyTimeout), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if bodyTimeout {
+						w.WriteHeader(http.StatusOK)
+						require.NoError(t, http.NewResponseController(w).Flush())
+					}
+					<-r.Context().Done()
+				}))
+				client := *srv.Client()
+				client.Timeout = 100 * time.Millisecond
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
+				require.NoError(t, err)
+				response, err := NewArchiveHTTPClient(&client).Do(req)
+				if bodyTimeout {
+					require.NoError(t, err)
+					defer response.Body.Close()
+					_, err = io.ReadAll(response.Body)
+				}
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.NoError(t, t.Context().Err())
 			})
 		})
 	}

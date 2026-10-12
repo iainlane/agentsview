@@ -1267,6 +1267,17 @@ func (b *httpBackend) ImportRecallEntries(
 	response, err := api.PostAPIV1RecallImportWithResponse(ctx, &apiclient.PostAPIV1RecallImportRequestOptions{Query: q}, func(_ context.Context, request *http.Request) error {
 		// Keep imports streaming instead of buffering the JSONL input.
 		request.Body = io.NopCloser(r)
+		request.GetBody = nil
+		if seeker, ok := r.(io.ReadSeeker); ok {
+			offset, err := seeker.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return err
+			}
+			request.GetBody = func() (io.ReadCloser, error) {
+				_, err := seeker.Seek(offset, io.SeekStart)
+				return io.NopCloser(seeker), err
+			}
+		}
 		request.ContentLength = -1
 		return nil
 	})

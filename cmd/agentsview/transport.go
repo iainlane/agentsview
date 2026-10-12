@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 
-	"go.kenn.io/agentsview/internal/apiclient"
 	"net/url"
 	"os"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"go.kenn.io/agentsview/internal/apiclient"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/postgres"
