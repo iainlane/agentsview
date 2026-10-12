@@ -146,10 +146,8 @@ func resolveWritableServiceWithIntent(
 		if err != nil {
 			return nil, nil, err
 		}
-		if fresh {
-			if err := waitDaemonStartupRebuild(cmd.Context(), transport{URL: remote}, token); err != nil {
-				return nil, nil, err
-			}
+		if err := waitDaemonStartupRebuild(cmd.Context(), transport{URL: remote}, token); err != nil {
+			return nil, nil, err
 		}
 		return servicehttp.NewHTTPBackend(remote, token, false, ""),
 			func() {}, nil
@@ -190,7 +188,7 @@ func resolveWritableServiceWithIntent(
 				"is reachable and compatible, or stop it to write locally",
 		)
 	}
-	if fresh && tr.Mode == transportHTTP {
+	if tr.Mode == transportHTTP {
 		if err := waitDaemonStartupRebuild(cmd.Context(), tr, cfg.AuthToken); err != nil {
 			return nil, nil, err
 		}

@@ -2047,6 +2047,12 @@ func ArchiveNeedsResync(ctx context.Context, path string) (bool, error) {
 	return schemaStale || dataStale, err
 }
 
+// ArchiveNeedsDataVersionRebuild excludes scoped upgrades and schema repairs.
+func ArchiveNeedsDataVersionRebuild(ctx context.Context, path string) (bool, error) {
+	_, dataStale, err := probeDatabase(ctx, path, false)
+	return dataStale, err
+}
+
 // probeDatabase checks an existing database for schema and data staleness.
 // It returns (schemaRepairNeeded, dataStale, err). A writable Open repairs
 // missing legacy columns before initializing schema indexes, then requires a

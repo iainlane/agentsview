@@ -2358,6 +2358,7 @@ func TestStartupRebuildRejectsCompetingRequests(t *testing.T) {
 			http.StatusConflict, http.StatusConflict,
 		},
 		{"/api/v1/resync", nil, sse, http.StatusConflict, http.StatusConflict},
+		{"/api/v1/memory/refresh", nil, []string{"application/json"}, http.StatusConflict, http.StatusConflict},
 		{
 			"/api/v1/sync/remotes", jsontext.Value(`{"full":false,"include_local":false,"hosts":[{"host":"alpha"}]}`),
 			sse, http.StatusConflict, http.StatusConflict,

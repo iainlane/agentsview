@@ -316,6 +316,9 @@ func postInsightGenerate(
 	req insightGenerateRequest,
 	progress io.Writer,
 ) (*db.Insight, error) {
+	if err := waitDaemonStartupRebuild(ctx, transport{URL: insightRequestBaseURL(tr.URL)}, token); err != nil {
+		return nil, err
+	}
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("encoding insight request: %w", err)

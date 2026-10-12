@@ -981,6 +981,9 @@ type daemonAPIError struct {
 func (e *daemonAPIError) Error() string { return e.message }
 
 func (c embeddingsDaemonClient) startBuild(ctx context.Context, req vector.BuildRequest) error {
+	if err := waitDaemonStartupRebuild(ctx, transport{URL: c.baseURL}, c.token); err != nil {
+		return err
+	}
 	api, err := apiclient.NewHTTPClient(c.baseURL, c.token, embeddingsDaemonHTTPClient)
 	if err != nil {
 		return err
@@ -1042,6 +1045,9 @@ func (c embeddingsDaemonClient) generations(ctx context.Context) ([]vector.Gener
 }
 
 func (c embeddingsDaemonClient) activate(ctx context.Context, id int64, force bool) error {
+	if err := waitDaemonStartupRebuild(ctx, transport{URL: c.baseURL}, c.token); err != nil {
+		return err
+	}
 	api, err := apiclient.NewHTTPClient(c.baseURL, c.token, embeddingsDaemonHTTPClient)
 	if err != nil {
 		return err
@@ -1061,6 +1067,9 @@ func (c embeddingsDaemonClient) activate(ctx context.Context, id int64, force bo
 }
 
 func (c embeddingsDaemonClient) retire(ctx context.Context, id int64, force bool) error {
+	if err := waitDaemonStartupRebuild(ctx, transport{URL: c.baseURL}, c.token); err != nil {
+		return err
+	}
 	api, err := apiclient.NewHTTPClient(c.baseURL, c.token, embeddingsDaemonHTTPClient)
 	if err != nil {
 		return err

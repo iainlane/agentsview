@@ -94,7 +94,7 @@ func startupSyncOperation(
 }
 
 func waitDaemonStartupRebuild(ctx context.Context, tr transport, authToken string) error {
-	ctx, _ = apiclient.TrackArchiveFreshness(ctx, nil)
+	ctx = serverCommandContext(ctx)
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 	api, err := apiclient.NewHTTPClient(tr.URL, authToken, &http.Client{Timeout: 30 * time.Second})

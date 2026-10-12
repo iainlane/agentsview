@@ -905,7 +905,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) archiveStaleMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") && s.archiveStale() {
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/ping" && r.URL.Path != "/api/v1/version" && r.URL.Path != "/api/v1/sync/status" && s.archiveStale() {
 			w.Header().Set(apiclient.ArchiveStaleHeader, "true")
 		}
 		next.ServeHTTP(w, r)

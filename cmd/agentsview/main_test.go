@@ -177,30 +177,51 @@ func TestServeCommandMountsWritableServerAtBasePath(t *testing.T) {
 }
 
 func TestServeSkipInitialSyncServesWhileReparsingStaleArchive(t *testing.T) {
-	cfg := testConfigWithClaudeFixture(t)
-	cfg.Host = "127.0.0.1"
-	database, err := db.Open(t.Context(), cfg.DBPath)
-	require.NoError(t, err)
-	dbtest.SeedSessionWithMessages(t, database, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")})
-	require.NoError(t, database.Close())
-	markArchiveStale(t, cfg.DBPath)
-	data, err := json.Marshal(cfg)
-	require.NoError(t, err)
-	out, err := runRuntimeWarningHelperProcess(t, "serve", "TestServeStaleArchiveHelperProcess",
-		[]string{
-			"AGENTSVIEW_STALE_SERVE_CONFIG=" + string(data),
-			"AGENTSVIEW_STALE_SERVE_EXPECT_REBUILD=1",
-			"AGENTSVIEW_STALE_SERVE_SOURCES=" + cfg.AgentDirs[parser.AgentClaude][0],
-		}, "archive rebuild complete", 2*time.Minute)
-	require.NoError(t, err, string(out))
-	assert.Contains(t, string(out), "old archive readable before startup rebuild")
-	stale, err := db.ArchiveNeedsResync(t.Context(), cfg.DBPath)
-	require.NoError(t, err)
-	assert.False(t, stale, "the required reparse must eventually install its replacement")
-	serveLog, err := os.ReadFile(filepath.Join(cfg.DataDir, "debug.log"))
-	require.NoError(t, err)
-	assert.NotContains(t, string(serveLog), "required archive rebuild did not complete",
-		"a pending background rebuild must not be logged as failed")
+	for _, archive := range []string{"data version", "scoped pending", "schema repair"} {
+		t.Run(archive, func(t *testing.T) {
+			cfg := testConfigWithClaudeFixture(t)
+			cfg.Host = "127.0.0.1"
+			database, err := db.Open(t.Context(), cfg.DBPath)
+			require.NoError(t, err)
+			dbtest.SeedSessionWithMessages(t, database, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")})
+			require.NoError(t, database.Close())
+			if archive == "data version" {
+				markArchiveStale(t, cfg.DBPath)
+			} else {
+				conn, err := sql.Open("sqlite3", cfg.DBPath)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = conn.Close() })
+				statement := "INSERT INTO stats(key, value) VALUES ('scoped_upgrade_pending', 1)"
+				if archive == "schema repair" {
+					statement = "ALTER TABLE tool_calls DROP COLUMN result_content_length"
+				}
+				_, err = conn.ExecContext(t.Context(), statement)
+				require.NoError(t, err)
+				require.NoError(t, conn.Close())
+			}
+			data, err := json.Marshal(cfg)
+			require.NoError(t, err)
+			out, err := runRuntimeWarningHelperProcess(t, "serve", "TestServeStaleArchiveHelperProcess",
+				[]string{
+					"AGENTSVIEW_STALE_SERVE_CONFIG=" + string(data),
+					"AGENTSVIEW_STALE_SERVE_KIND=" + archive,
+					"AGENTSVIEW_STALE_SERVE_SOURCES=" + cfg.AgentDirs[parser.AgentClaude][0],
+				}, "archive rebuild complete", 2*time.Minute)
+			require.NoError(t, err, string(out))
+			if archive == "data version" {
+				assert.Contains(t, string(out), "old archive readable before startup rebuild")
+			} else {
+				assert.Contains(t, string(out), "archive reparsed before readiness")
+			}
+			stale, err := db.ArchiveNeedsResync(t.Context(), cfg.DBPath)
+			require.NoError(t, err)
+			assert.False(t, stale, "the required reparse must eventually install its replacement")
+			serveLog, err := os.ReadFile(filepath.Join(cfg.DataDir, "debug.log"))
+			require.NoError(t, err)
+			assert.NotContains(t, string(serveLog), "required archive rebuild did not complete",
+				"a pending background rebuild must not be logged as failed")
+		})
+	}
 }
 
 func TestServeStaleArchiveHelperProcess(t *testing.T) {
@@ -228,9 +249,7 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 		dataDir, host string, port int, version, browserURL string, readOnly,
 		requireAuth, noSync bool, explicitPort *int, caddyPID ...int,
 	) (string, error) {
-		if os.Getenv("AGENTSVIEW_STALE_SERVE_EXPECT_REBUILD") != "1" {
-			return original(dataDir, host, port, version, browserURL, readOnly, requireAuth, noSync, explicitPort, caddyPID...)
-		}
+		backgroundRebuild := os.Getenv("AGENTSVIEW_STALE_SERVE_KIND") == "data version"
 		base := fmt.Sprintf("http://%s:%d", host, port)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/sessions/retained/messages", nil)
 		if err != nil {
@@ -241,8 +260,11 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 			return fail(err)
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK ||
-			resp.Header.Get("X-Agentsview-Archive-Stale") != "true" {
+		wantStale := ""
+		if backgroundRebuild {
+			wantStale = "true"
+		}
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Agentsview-Archive-Stale") != wantStale {
 			return fail(fmt.Errorf("retained archive read: status=%d stale=%q", resp.StatusCode, resp.Header.Get("X-Agentsview-Archive-Stale")))
 		}
 		body, err := io.ReadAll(resp.Body)
@@ -251,6 +273,15 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 		}
 		if !strings.Contains(string(body), "retained transcript") {
 			return fail(fmt.Errorf("retained transcript missing from messages: %s", body))
+		}
+		if !backgroundRebuild {
+			stale, err := db.ArchiveNeedsResync(ctx, cfg.DBPath)
+			if err != nil || stale {
+				return fail(fmt.Errorf("archive still needs startup sync: stale=%t err=%v", stale, err))
+			}
+			fmt.Println("archive reparsed before readiness")
+			fmt.Println("archive rebuild complete")
+			return original(dataDir, host, port, version, browserURL, readOnly, requireAuth, noSync, explicitPort, caddyPID...)
 		}
 		fmt.Println("old archive readable before startup rebuild")
 		pollDone = make(chan struct{})
@@ -269,7 +300,10 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 					return false
 				}
 				defer resp.Body.Close()
-				return resp.Header.Get("X-Agentsview-Archive-Stale") == ""
+				var status struct {
+					ArchiveStale bool `json:"archive_stale"`
+				}
+				return json.UnmarshalRead(resp.Body, &status) == nil && !status.ArchiveStale
 			}, 90*time.Second, 10*time.Millisecond) {
 				_, _ = fail(errors.New("archive rebuild did not finish"))
 				return

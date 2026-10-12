@@ -218,7 +218,13 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 		if err != nil {
 			fatal("checking archive before startup: %v", err)
 		}
-		startupRebuild = needsResync
+		startupRebuild, err = db.ArchiveNeedsDataVersionRebuild(ctx, cfg.DBPath)
+		if err != nil {
+			fatal("checking archive data version before startup: %v", err)
+		}
+		if needsResync && !startupRebuild {
+			opts.SkipInitialSync = false
+		}
 	}
 	if !startupRebuild && !opts.SkipInitialSync && !cfg.NoSync && !testing.Testing() {
 		startupProgress.SetPhase("opening database")
@@ -1126,7 +1132,6 @@ func runStartupArchiveRebuild(ctx context.Context, engine *sync.Engine, runner s
 	if !engine.StartupAttemptCompleted() {
 		engine.RecordStartupReconciled(stats, err)
 	}
-	engine.ReleaseStartupMaintenance()
 	if err != nil && ctx.Err() == nil {
 		log.Printf("startup archive rebuild: %v", err)
 	}

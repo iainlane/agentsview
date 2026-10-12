@@ -2418,3 +2418,74 @@ func TestLooksLikePath(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenUse_UsesDiscoveredDaemon(t *testing.T) {
+	dataDir := newAgentDataDir(t)
+
+	var gotUsagePath string
+	ts := sessionUsageRuntimeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/sessions/remote-session":
+			_, _ = w.Write([]byte(`{
+				"id": "remote-session",
+				"agent": "codex",
+				"project": "remote-project"
+			}`))
+		case "/api/v1/sessions/sync":
+			var input service.SyncInput
+			if !assert.NoError(t, json.UnmarshalRead(r.Body, &input)) {
+				return
+			}
+			assert.Equal(t, service.SyncInput{
+				ID: "remote-session", Subagents: true,
+			}, input)
+			_, _ = w.Write([]byte(`{"id":"remote-session"}`))
+		case "/api/v1/sessions/remote-session/usage":
+			gotUsagePath = r.URL.Path
+			_, _ = w.Write([]byte(`{
+				"session_id": "remote-session",
+				"agent": "codex",
+				"project": "remote-project",
+				"total_output_tokens": 42,
+				"peak_context_tokens": 2048,
+				"has_token_data": true,
+				"cost": {"microdollars": 500000},
+				"has_cost": true,
+				"models": ["gpt-5.1"],
+				"unpriced_models": []
+			}`))
+		default:
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+			http.NotFound(w, r)
+		}
+	})
+	registerSyncRouteTestRuntime(t, dataDir, ts.URL)
+
+	out, code, err := sessionUsageData(t.Context(), "remote-session")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "/api/v1/sessions/remote-session/usage", gotUsagePath)
+	assert.Equal(t, tokenUseExitOK, code)
+	assert.Equal(t, "remote-session", out.SessionID)
+	assert.True(t, out.ServerRunning)
+	assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
+}
+
+func TestTokenUse_UsesArchivedReadOnlyDaemonUsage(t *testing.T) {
+	dataDir := newAgentDataDir(t)
+	ts, paths := readOnlySessionUsageRuntimeServer(t)
+	registerTestRuntime(t, dataDir, ts.URL, true)
+
+	out, code, err := sessionUsageData(t.Context(), "remote-session")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, tokenUseExitOK, code)
+	assert.Equal(t, 42, out.TotalOutputTokens)
+	assert.Equal(t, []string{
+		"/api/v1/sessions/remote-session",
+		"/api/v1/sessions/sync",
+		"/api/v1/sessions/remote-session/usage",
+	}, *paths)
+	assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
+}

@@ -16,6 +16,12 @@ func (s *Server) registerMemoryRefreshRoute() {
 }
 
 func (s *Server) handleMemoryRefresh(w http.ResponseWriter, _ *http.Request) {
+	if err := s.rejectStartupRebuild(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = sjson(w, map[string]string{"error": err.Error()})
+		return
+	}
 	if s.memoryRefreshRequest == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)

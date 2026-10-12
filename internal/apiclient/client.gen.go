@@ -17,7 +17,6 @@ import (
 	money "go.kenn.io/agentsview/internal/money"
 	rawsync "go.kenn.io/agentsview/internal/rawsync"
 	service "go.kenn.io/agentsview/internal/service"
-	sync "go.kenn.io/agentsview/internal/sync"
 	vector "go.kenn.io/agentsview/internal/vector"
 )
 
@@ -18775,7 +18774,9 @@ type PostAPIV1SyncRemotesErrorResponseJSON503 = APIErrorResponse
 
 type PostAPIV1SyncRemotesErrorResponseJSON504 = APIErrorResponse
 
-type GetAPIV1SyncStatusResponse = SyncStatusResponse
+type GetAPIV1SyncStatusResponse = struct {
+	ArchiveStale bool `json:"archive_stale"`
+}
 
 type GetAPIV1SyncStatusErrorResponse = APIErrorResponse
 
@@ -22373,7 +22374,29 @@ func (s SyncAnomalyStats) Validate() error {
 	return errors
 }
 
-type SyncProgress = sync.Progress
+type SyncProgress struct {
+	BytesDone         *int64     `json:"bytes_done,omitempty"`
+	BytesTotal        *int64     `json:"bytes_total,omitempty"`
+	CurrentProject    *string    `json:"current_project,omitempty"`
+	Detail            *string    `json:"detail,omitempty"`
+	FallbackProviders *int64     `json:"fallback_providers,omitempty"`
+	FallbackSources   *int64     `json:"fallback_sources,omitempty"`
+	Hint              *string    `json:"hint,omitempty"`
+	MessagesIndexed   int64      `json:"messages_indexed"`
+	Phase             string     `json:"phase" validate:"required"`
+	ProjectsDone      int64      `json:"projects_done"`
+	ProjectsTotal     int64      `json:"projects_total"`
+	Resync            *bool      `json:"resync,omitempty"`
+	SessionsDone      int64      `json:"sessions_done"`
+	SessionsTotal     int64      `json:"sessions_total"`
+	Stalled           *bool      `json:"stalled,omitempty"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	UpdatedAt         *time.Time `json:"updated_at,omitempty"`
+}
+
+func (s SyncProgress) Validate() error {
+	return runtime.ConvertValidatorError(typesValidator.Struct(s))
+}
 
 type SyncRebuildPhaseStats struct {
 	BatchedWrites  int64  `json:"batched_writes"`
@@ -22397,35 +22420,8 @@ type SyncSanitizeStats struct {
 	TokensClamped        *int64 `json:"tokens_clamped,omitempty"`
 }
 
-type SyncStatusResponse struct {
-	// ArchiveStale Results may reflect the archive before a required parser rebuild
-	ArchiveStale bool          `json:"archive_stale"`
-	LastSync     string        `json:"last_sync" validate:"required"`
-	Progress     *SyncProgress `json:"progress,omitempty"`
-	Stats        SyncSyncStats `json:"stats"`
-}
-
-func (s SyncStatusResponse) Validate() error {
-	var errors runtime.ValidationErrors
-	if err := typesValidator.Var(s.LastSync, "required"); err != nil {
-		errors = errors.Append("LastSync", err)
-	}
-	if s.Progress != nil {
-		if v, ok := any(s.Progress).(runtime.Validator); ok {
-			if err := v.Validate(); err != nil {
-				errors = errors.Append("Progress", err)
-			}
-		}
-	}
-	if v, ok := any(s.Stats).(runtime.Validator); ok {
-		if err := v.Validate(); err != nil {
-			errors = errors.Append("Stats", err)
-		}
-	}
-	if len(errors) == 0 {
-		return nil
-	}
-	return errors
+type SyncStatusResponse = struct {
+	ArchiveStale bool `json:"archive_stale"`
 }
 
 type SyncSyncStats struct {

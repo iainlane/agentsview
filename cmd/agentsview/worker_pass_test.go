@@ -527,104 +527,125 @@ func TestRunWorkerResyncBuildHonorsRequiredOnly(t *testing.T) {
 }
 
 func TestRunWorkerResyncBuildKeepsRetainedReadsAvailable(t *testing.T) {
-	cfg := testConfigWithClaudeFixture(t)
-	cfg.Host = "127.0.0.1"
-	seed, err := db.Open(t.Context(), cfg.DBPath)
-	require.NoError(t, err)
-	dbtest.SeedSessionWithMessages(t, seed, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")})
-	require.NoError(t, seed.Close())
-	markArchiveStale(t, cfg.DBPath)
-	database, _ := openTestWriteDB(t, cfg)
-	engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{})
-	t.Cleanup(engine.Close)
-	workerStarted := make(chan struct{})
-	emitProgress := make(chan struct{}, 1)
-	progressSeen := make(chan struct{})
-	release := make(chan struct{}, 1)
-	defer func() {
-		select {
-		case emitProgress <- struct{}{}:
-		default:
-		}
-		select {
-		case release <- struct{}{}:
-		default:
-		}
-	}()
-	handler := server.New(cfg, database, engine).Handler()
-	readRetained := func() {
-		for _, path := range []string{"/api/v1/sessions/retained/messages", "/api/v1/search?q=retained"} {
+	for _, outcome := range []string{"failed", "aborted"} {
+		t.Run(outcome, func(t *testing.T) {
+			logs := captureLogOutput(t)
+			cfg := testConfigWithClaudeFixture(t)
+			cfg.Host = "127.0.0.1"
+			seed, err := db.Open(t.Context(), cfg.DBPath)
+			require.NoError(t, err)
+			dbtest.SeedSessionWithMessages(t, seed, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")})
+			require.NoError(t, seed.Close())
+			markArchiveStale(t, cfg.DBPath)
+			database, _ := openTestWriteDB(t, cfg)
+			engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{})
+			t.Cleanup(engine.Close)
+			workerStarted := make(chan struct{})
+			emitProgress := make(chan struct{}, 1)
+			progressSeen := make(chan struct{})
+			release := make(chan struct{}, 1)
+			defer func() {
+				select {
+				case emitProgress <- struct{}{}:
+				default:
+				}
+				select {
+				case release <- struct{}{}:
+				default:
+				}
+			}()
+			handler := server.New(cfg, database, engine).Handler()
+			readRetained := func() {
+				for _, path := range []string{"/api/ping", "/api/v1/version", "/api/v1/sync/status"} {
+					w := httptest.NewRecorder()
+					handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0"+path, nil))
+					assert.Equal(t, http.StatusOK, w.Code)
+					assert.Empty(t, w.Header().Get("X-Agentsview-Archive-Stale"), path)
+				}
+				for _, path := range []string{"/api/v1/sessions/retained/messages", "/api/v1/search?q=retained"} {
+					w := httptest.NewRecorder()
+					handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0"+path, nil))
+					assert.Equal(t, http.StatusOK, w.Code)
+					assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
+					assert.Contains(t, strings.NewReplacer("<mark>", "", "</mark>", "").Replace(w.Body.String()), "retained transcript")
+				}
+			}
+			sentinel := errors.New("resync worker stopped")
+			restore := stubLaunchSyncWorker(t, func(
+				_ context.Context, _ config.Config, request syncWorkerRequest, onLine func(workerLine),
+			) (workerResult, error) {
+				mode := request.Mode
+				assert.Equal(t, "resync-build", mode)
+				close(workerStarted)
+				<-emitProgress
+				onLine(workerLine{Progress: &sync.Progress{
+					Phase: sync.PhaseSyncing, SessionsTotal: 8, SessionsDone: 3,
+				}})
+				close(progressSeen)
+				<-release
+				return workerResult{Status: outcome}, sentinel
+			})
+			defer restore()
+			type buildResult struct {
+				err         error
+				spawnFailed bool
+			}
+			done := make(chan buildResult, 1)
+			go func() {
+				var result buildResult
+				runStartupArchiveRebuild(t.Context(), engine, func(ctx context.Context, progress func(sync.Progress)) (sync.SyncStats, error) {
+					worker, err, spawnFailed := runWorkerResyncBuild(ctx, t.Context(), cfg, engine, database, progress, true)
+					result = buildResult{err: err, spawnFailed: spawnFailed}
+					return statsFromWorkerResult(worker), err
+				})
+				done <- result
+			}()
+			select {
+			case <-workerStarted:
+			case <-time.After(time.Second):
+				require.FailNow(t, "resync worker did not start")
+			}
+
+			require.True(t, database.WriterClosed())
+			readRetained()
+
+			current, active := engine.CurrentProgress()
+			require.True(t, active,
+				"daemon health must observe resync before its first worker update")
+			assert.Equal(t, sync.PhasePreparingResync, current.Phase)
+			assert.False(t, current.StartedAt.IsZero())
+			assert.False(t, current.UpdatedAt.IsZero())
+
+			emitProgress <- struct{}{}
+			select {
+			case <-progressSeen:
+			case <-time.After(time.Second):
+				require.FailNow(t, "resync worker did not publish progress")
+			}
+			current, active = engine.CurrentProgress()
+			require.True(t, active,
+				"daemon health must receive progress from the resync worker")
+			assert.Equal(t, sync.PhaseSyncing, current.Phase)
+			assert.Equal(t, 8, current.SessionsTotal)
+			assert.Equal(t, 3, current.SessionsDone)
+
+			release <- struct{}{}
+			result := <-done
+			require.ErrorIs(t, result.err, sentinel)
+			assert.False(t, result.spawnFailed)
+			_, active = engine.CurrentProgress()
+			assert.False(t, active,
+				"completed resync worker must clear daemon-visible progress")
+			readRetained()
+			assert.False(t, database.WriterClosed())
+			assert.True(t, engine.StartupAttemptCompleted())
+			assert.False(t, engine.StartupReconciled())
+			assert.Contains(t, logs.String(), "startup archive rebuild: resync worker stopped")
 			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0"+path, nil))
-			assert.Equal(t, http.StatusOK, w.Code)
-			assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Stale"))
-			assert.Contains(t, strings.NewReplacer("<mark>", "", "</mark>", "").Replace(w.Body.String()), "retained transcript")
-		}
+			handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:0/api/v1/sync/status", nil))
+			assert.Contains(t, w.Body.String(), `"archive_stale":true`)
+		})
 	}
-	sentinel := errors.New("resync worker stopped")
-	restore := stubLaunchSyncWorker(t, func(
-		_ context.Context, _ config.Config, request syncWorkerRequest, onLine func(workerLine),
-	) (workerResult, error) {
-		mode := request.Mode
-		assert.Equal(t, "resync-build", mode)
-		close(workerStarted)
-		<-emitProgress
-		onLine(workerLine{Progress: &sync.Progress{
-			Phase: sync.PhaseSyncing, SessionsTotal: 8, SessionsDone: 3,
-		}})
-		close(progressSeen)
-		<-release
-		return workerResult{}, sentinel
-	})
-	defer restore()
-	type buildResult struct {
-		err         error
-		spawnFailed bool
-	}
-	done := make(chan buildResult, 1)
-	go func() {
-		_, err, spawnFailed := runWorkerResyncBuild(
-			t.Context(), t.Context(), cfg, engine, database, nil, true,
-		)
-		done <- buildResult{err: err, spawnFailed: spawnFailed}
-	}()
-	select {
-	case <-workerStarted:
-	case <-time.After(time.Second):
-		require.FailNow(t, "resync worker did not start")
-	}
-
-	require.True(t, database.WriterClosed())
-	readRetained()
-
-	current, active := engine.CurrentProgress()
-	require.True(t, active,
-		"daemon health must observe resync before its first worker update")
-	assert.Equal(t, sync.PhasePreparingResync, current.Phase)
-	assert.False(t, current.StartedAt.IsZero())
-	assert.False(t, current.UpdatedAt.IsZero())
-
-	emitProgress <- struct{}{}
-	select {
-	case <-progressSeen:
-	case <-time.After(time.Second):
-		require.FailNow(t, "resync worker did not publish progress")
-	}
-	current, active = engine.CurrentProgress()
-	require.True(t, active,
-		"daemon health must receive progress from the resync worker")
-	assert.Equal(t, sync.PhaseSyncing, current.Phase)
-	assert.Equal(t, 8, current.SessionsTotal)
-	assert.Equal(t, 3, current.SessionsDone)
-
-	release <- struct{}{}
-	result := <-done
-	require.ErrorIs(t, result.err, sentinel)
-	assert.False(t, result.spawnFailed)
-	_, active = engine.CurrentProgress()
-	assert.False(t, active,
-		"completed resync worker must clear daemon-visible progress")
-	readRetained()
 }
 
 // TestRunWorkerSyncPassNoWorkerRecordsNothing pins first-attempt semantics for

@@ -395,6 +395,9 @@ func requestLocalMemoryRefresh(ctx context.Context) error {
 }
 
 func postMemoryRefresh(ctx context.Context, baseURL, token string) error {
+	if err := waitDaemonStartupRebuild(ctx, transport{URL: baseURL}, token); err != nil {
+		return err
+	}
 	url := strings.TrimSuffix(baseURL, "/") + "/api/v1/memory/refresh"
 	req, err := http.NewRequestWithContext(
 		ctx, http.MethodPost, url, http.NoBody,

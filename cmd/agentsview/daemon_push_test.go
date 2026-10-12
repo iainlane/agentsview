@@ -11,19 +11,24 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/doordash-oss/oapi-codegen-dd/v3/pkg/runtime"
+	"github.com/spf13/cobra"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/apiclient"
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/storage"
+	"go.kenn.io/agentsview/internal/vector"
 )
 
 func TestCLIWriteWaitsForStartupRebuild(t *testing.T) {
-	for _, command := range []string{"full", "remote", "replica"} {
+	for _, command := range []string{"full", "remote", "replica", "recall local", "recall server", "secrets", "memory", "insight", "embeddings build", "embeddings activate", "embeddings retire"} {
 		outcomes := []string{"success"}
 		if command == "full" {
 			outcomes = append(outcomes, "cancel", "failed rebuild", "current", "transport failure")
@@ -71,11 +76,34 @@ func TestCLIWriteWaitsForStartupRebuild(t *testing.T) {
 							_, _ = w.Write([]byte("event: done\ndata: {}\n\n"))
 						}
 					},
-					"/api/v1/resync":       write,
-					"/api/v1/sync/remotes": write,
-					"/api/v1/push/pg":      write,
+					"/api/v1/resync":        write,
+					"/api/v1/sync/remotes":  write,
+					"/api/v1/push/pg":       write,
+					"/api/v1/recall/import": write,
+					"/api/v1/secrets/scan":  write,
+					"/api/v1/memory/refresh": func(w http.ResponseWriter, r *http.Request) {
+						w.WriteHeader(http.StatusAccepted)
+						write(w, r)
+					},
+					"/api/v1/insights/generate": func(w http.ResponseWriter, _ *http.Request) {
+						writes.Add(1)
+						_, _ = w.Write([]byte("event: done\ndata: {\"id\":1}\n\n"))
+					},
+					"/api/v1/embeddings/build": func(w http.ResponseWriter, r *http.Request) {
+						w.WriteHeader(http.StatusAccepted)
+						write(w, r)
+					},
+					"/api/v1/embeddings/generations/1/activate": func(w http.ResponseWriter, _ *http.Request) {
+						writes.Add(1)
+						w.WriteHeader(http.StatusNoContent)
+					},
+					"/api/v1/embeddings/generations/1/retire": func(w http.ResponseWriter, _ *http.Request) {
+						writes.Add(1)
+						w.WriteHeader(http.StatusNoContent)
+					},
 				})
 				cfg := config.Config{DataDir: daemonRuntimeDir(t)}
+				t.Setenv("AGENTSVIEW_DATA_DIR", cfg.DataDir)
 				registerSyncRouteTestRuntime(t, cfg.DataDir, ts.URL)
 				done := make(chan error, 1)
 				go func() {
@@ -86,6 +114,33 @@ func TestCLIWriteWaitsForStartupRebuild(t *testing.T) {
 						_, err = runDaemonSync(ctx, tr, "", true, nil)
 					case "remote":
 						_, err = runDaemonRemoteSync(ctx, tr, "", nil, false, true, nil)
+					case "recall local", "recall server", "secrets":
+						cmd := &cobra.Command{}
+						cmd.SetContext(ctx)
+						cmd.Flags().String("server", "", "")
+						if command == "recall server" {
+							err = cmd.Flags().Set("server", ts.URL)
+						}
+						var cleanup func()
+						svc, cleanup, err := resolveWritableService(cmd)
+						if err == nil {
+							defer cleanup()
+							if command == "secrets" {
+								_, err = svc.ScanSecrets(ctx, service.SecretScanInput{}, nil)
+							} else {
+								_, err = svc.ImportRecallEntries(ctx, strings.NewReader("{}"), db.RecallImportOptions{})
+							}
+						}
+					case "memory":
+						err = postMemoryRefresh(ctx, ts.URL, "")
+					case "insight":
+						_, err = postInsightGenerate(ctx, tr, "", insightGenerateRequest{}, io.Discard)
+					case "embeddings build":
+						err = (embeddingsDaemonClient{baseURL: ts.URL}).startBuild(ctx, vector.BuildRequest{})
+					case "embeddings activate":
+						err = (embeddingsDaemonClient{baseURL: ts.URL}).activate(ctx, 1, false)
+					case "embeddings retire":
+						err = (embeddingsDaemonClient{baseURL: ts.URL}).retire(ctx, 1, false)
 					default:
 						var backend archiveWriteBackend
 						var cleanup func()
@@ -98,7 +153,13 @@ func TestCLIWriteWaitsForStartupRebuild(t *testing.T) {
 					done <- err
 				}()
 				if outcome != "current" && outcome != "transport failure" {
-					<-entered
+					select {
+					case <-entered:
+					case err := <-done:
+						require.FailNow(t, "write returned before waiting for startup rebuilding", "%v", err)
+					case <-time.After(5 * time.Second):
+						require.FailNow(t, "write never reached the startup waiter")
+					}
 					assert.Zero(t, writes.Load(), "writes must wait for the startup attempt")
 					if outcome == "cancel" {
 						cancel()
