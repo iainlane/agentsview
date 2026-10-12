@@ -1274,15 +1274,15 @@ func TestArchiveResyncState(t *testing.T) {
 			t.Cleanup(InstallDataVersionScopesForTest(map[int][]parser.AgentType{dataVersion: {parser.AgentClaude}}))
 			d := testDB(t)
 			require.NoError(t, d.Update(t.Context(), func(tx *sql.Tx) error {
-				_, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", tc.version))
+				_, err := tx.ExecContext(t.Context(), fmt.Sprintf("PRAGMA user_version=%d", tc.version))
 				if err != nil {
 					return err
 				}
 				if tc.pending {
-					_, err = tx.Exec("INSERT INTO stats(key,value) VALUES ('scoped_upgrade_pending',1)")
+					_, err = tx.ExecContext(t.Context(), "INSERT INTO stats(key,value) VALUES ('scoped_upgrade_pending',1)")
 				}
 				if tc.repair {
-					_, err = tx.Exec("ALTER TABLE tool_calls DROP COLUMN result_content_length")
+					_, err = tx.ExecContext(t.Context(), "ALTER TABLE tool_calls DROP COLUMN result_content_length")
 				}
 				return err
 			}))

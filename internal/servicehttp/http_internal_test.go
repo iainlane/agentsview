@@ -39,7 +39,9 @@ func TestImportRecallEntriesReplay(t *testing.T) {
 				srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					assert.Equal(t, "/api/v1/recall/import", r.URL.Path)
 					body, err := io.ReadAll(r.Body)
-					require.NoError(t, err)
+					if !assert.NoError(t, err) {
+						return
+					}
 					assert.Equal(t, jsonl, string(body))
 					calls++
 					if calls == 1 {

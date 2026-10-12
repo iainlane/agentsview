@@ -114,13 +114,13 @@ func configureHuma() {
 				for _, err := range errs {
 					if errors.Is(err, db.ErrWriterClosed) {
 						closed := writerClosedError()
-						for key, values := range closed.(huma.HeadersError).GetHeaders() {
+						headers, _ := errors.AsType[huma.HeadersError](closed)
+						for key, values := range headers.GetHeaders() {
 							for _, value := range values {
 								ctx.AppendHeader(key, value)
 							}
 						}
-						var response huma.StatusError
-						errors.As(closed, &response)
+						response, _ := errors.AsType[huma.StatusError](closed)
 						return response
 					}
 				}

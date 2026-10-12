@@ -38,13 +38,13 @@ func handleReadOnly(w http.ResponseWriter, err error) bool {
 	}
 	if errors.Is(err, db.ErrWriterClosed) {
 		closed := writerClosedError()
-		for key, values := range closed.(huma.HeadersError).GetHeaders() {
+		headers, _ := errors.AsType[huma.HeadersError](closed)
+		for key, values := range headers.GetHeaders() {
 			for _, value := range values {
 				w.Header().Add(key, value)
 			}
 		}
-		var response huma.StatusError
-		errors.As(closed, &response)
+		response, _ := errors.AsType[huma.StatusError](closed)
 		writeError(w, response.GetStatus(), response.Error())
 		return true
 	}

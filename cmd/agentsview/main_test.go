@@ -244,7 +244,10 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 	original := writeDaemonRuntimeWithAuthAndNoSync
 	writeDaemonRuntimeWithAuthAndNoSync = func(dataDir, host string, port int, version, browserURL string, readOnly, requireAuth, noSync bool, explicitPort *int, caddyPID ...int) (string, error) {
 		base := fmt.Sprintf("http://%s:%d", host, port)
-		resp, err := http.Get(base + "/api/v1/sessions/retained/messages")
+		client := &http.Client{Timeout: 0}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/api/v1/sessions/retained/messages", nil)
+		require.NoError(t, err)
+		resp, err := client.Do(req)
 		require.NoError(t, err)
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
@@ -255,7 +258,9 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 			require.Equal(t, "true", resp.Header.Get("X-Agentsview-Archive-Stale"))
 			close(release)
 			require.Eventually(t, func() bool {
-				resp, err := http.Get(base + "/api/v1/sync/status")
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/api/v1/sync/status", nil)
+				require.NoError(t, err)
+				resp, err := client.Do(req)
 				if err != nil {
 					return false
 				}

@@ -87,26 +87,26 @@ func WithArchiveNotices(writer io.Writer) ArchiveOption {
 // NewArchiveHTTPClient copies the client and installs archive retry handling.
 func NewArchiveHTTPClient(client *http.Client, options ...ArchiveOption) *http.Client {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 0}
 	}
-	copy := *client
-	base := copy.Transport
+	cloned := *client
+	base := cloned.Transport
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	transport := &archiveTransport{base: base, attemptTimeout: copy.Timeout}
+	transport := &archiveTransport{base: base, attemptTimeout: cloned.Timeout}
 	if installed, ok := base.(*archiveTransport); ok {
 		*transport = *installed
-		if copy.Timeout > 0 {
-			transport.attemptTimeout = copy.Timeout
+		if cloned.Timeout > 0 {
+			transport.attemptTimeout = cloned.Timeout
 		}
 	}
-	copy.Timeout = 0
+	cloned.Timeout = 0
 	for _, option := range options {
 		option(transport)
 	}
-	copy.Transport = transport
-	return &copy
+	cloned.Transport = transport
+	return &cloned
 }
 
 type archiveTransport struct {

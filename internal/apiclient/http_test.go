@@ -74,7 +74,7 @@ func TestArchiveRebuildRetry(t *testing.T) {
 				})}
 				client = NewArchiveHTTPClient(client)
 				client.Timeout = 100 * time.Millisecond
-				req, err := http.NewRequest(http.MethodPost, "http://example.test/api/v1/sync", strings.NewReader(`{"full":true}`))
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://example.test/api/v1/sync", strings.NewReader(`{"full":true}`))
 				require.NoError(t, err)
 				if !tc.replay {
 					req.GetBody = nil
@@ -114,7 +114,9 @@ func TestArchiveRequestAttemptTimeout(t *testing.T) {
 				srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if bodyTimeout {
 						w.WriteHeader(http.StatusOK)
-						require.NoError(t, http.NewResponseController(w).Flush())
+						if !assert.NoError(t, http.NewResponseController(w).Flush()) {
+							return
+						}
 					}
 					<-r.Context().Done()
 				}))
