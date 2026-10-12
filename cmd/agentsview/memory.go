@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"go.kenn.io/agentsview/internal/apiclient"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/postgres"
 	"go.kenn.io/agentsview/internal/servicehttp"
@@ -395,9 +396,6 @@ func requestLocalMemoryRefresh(ctx context.Context) error {
 }
 
 func postMemoryRefresh(ctx context.Context, baseURL, token string) error {
-	if err := waitDaemonStartupRebuild(ctx, transport{URL: baseURL}, token); err != nil {
-		return err
-	}
 	url := strings.TrimSuffix(baseURL, "/") + "/api/v1/memory/refresh"
 	req, err := http.NewRequestWithContext(
 		ctx, http.MethodPost, url, http.NoBody,
@@ -410,7 +408,7 @@ func postMemoryRefresh(ctx context.Context, baseURL, token string) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := &http.Client{Timeout: memorySessionStartTimeout}
-	resp, err := client.Do(req)
+	resp, err := apiclient.Do(ctx, client, req)
 	if err != nil {
 		return fmt.Errorf("memory session-start: request refresh: %w", err)
 	}

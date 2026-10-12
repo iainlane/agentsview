@@ -214,16 +214,13 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 	workerSyncDone := false
 	startupRebuild := false
 	if !cfg.NoSync {
-		needsResync, err := db.ArchiveNeedsResync(ctx, cfg.DBPath)
+		needsResync, fullRebuild, err := db.ArchiveResyncState(ctx, cfg.DBPath)
 		if err != nil {
 			fatal("checking archive before startup: %v", err)
 		}
-		startupRebuild, err = db.ArchiveNeedsDataVersionRebuild(ctx, cfg.DBPath)
-		if err != nil {
-			fatal("checking archive data version before startup: %v", err)
-		}
-		if needsResync && !startupRebuild {
-			opts.SkipInitialSync = false
+		startupRebuild = fullRebuild
+		if opts.SkipInitialSync {
+			opts.SkipInitialSync = !needsResync
 		}
 	}
 	if !startupRebuild && !opts.SkipInitialSync && !cfg.NoSync && !testing.Testing() {
@@ -265,9 +262,6 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 	})
 	if err != nil {
 		fatal("opening writable database: %v", err)
-	}
-	if startupRebuild && !database.NeedsResync() {
-		startupRebuild = false
 	}
 	databaseProgress.Finish()
 	runtimeRecordDataDir := ""
@@ -373,13 +367,11 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 		})
 		defer engine.Close()
 		var rebuildDone chan struct{}
-		if startupRebuild {
-			defer func() {
-				if rebuildDone != nil {
-					<-rebuildDone
-				}
-			}()
-		}
+		defer func() {
+			if rebuildDone != nil {
+				<-rebuildDone
+			}
+		}()
 		ingestion := newDaemonIngestion(
 			ctx, cfg, engine, database, idleTracker, opts.ReloadConfig,
 		)
@@ -464,8 +456,11 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 				go func() {
 					defer close(rebuildDone)
 					idleTracker.Do(func() {
-						runStartupArchiveRebuild(ctx, engine,
-							newForegroundResyncRunner(ctx, cfg, engine, database))
+						if database.NeedsResync() {
+							runStartupArchiveRebuild(ctx, engine, newForegroundResyncRunner(ctx, cfg, engine, database))
+						} else {
+							engine.RecordStartupReconciled(sync.SyncStats{}, nil)
+						}
 					})
 					if database.NeedsResync() && ctx.Err() == nil {
 						logPendingArchiveRebuild()
@@ -644,7 +639,7 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 		go idleTracker.Run(ctx)
 	}
 	startDaemonUsageCacheBackfill(ctx, database, idleTracker)
-	if engine != nil && opts.SkipInitialSync && !startupRebuild {
+	if engine != nil && opts.SkipInitialSync {
 		go func() {
 			timer := time.NewTimer(deferredStartupSyncGracePeriod)
 			defer timer.Stop()
@@ -697,12 +692,7 @@ func runServe(ctx context.Context, cfg config.Config, opts serveOptions, restart
 		defer extractSched.Stop()
 	}
 
-	// Start the deferred startup work now that the URL banner is out and every
-	// background service is started: either the worker-startup gap
-	// reconciliation or, for a stale archive, the background archive rebuild.
-	// Both hold the engine's sync mutex, not this goroutine's defers, so a
-	// SIGTERM during long startup work still unwinds through
-	// waitForServerRuntime.
+	// Defer startup work until HTTP is ready so shutdown can cancel it.
 	if startDeferredStartupWork != nil {
 		startDeferredStartupWork()
 	}
@@ -890,17 +880,7 @@ func startupWorkerOutcome(result workerResult, err error) (workerResult, bool) {
 	}
 }
 
-// deferStartupMaintenance reports whether archive-wide startup backfills must
-// wait for RecordStartupReconciled instead of starting immediately. Three paths
-// defer them. A daemon launched with the initial sync skipped lets a
-// foreground client drive startup, released by its sync or the bounded
-// fallback. A stale archive is rebuilt in the background after the HTTP server
-// is up; runServe passes it as skipInitialSync, and the rebuild releases the
-// gate when it finishes. On the worker path, the gap reconciliation runs only
-// after the HTTP server is up — maintenance released at construction would
-// grab the sync mutex first and stall that reconciliation, keeping watcher
-// dispatch in collecting mode. RecordStartupReconciled releases the gate on
-// the other two paths.
+// Startup maintenance waits for foreground sync, gap reconciliation, or the background rebuild.
 func deferStartupMaintenance(skipInitialSync, workerSyncDone bool) bool {
 	return skipInitialSync || workerSyncDone
 }
@@ -1121,8 +1101,7 @@ func newForegroundSyncRunner(
 	}
 }
 
-// logPendingArchiveRebuild reports a required rebuild that startup could not
-// finish. The archive audit loop retries it after archiveAuditRetryInitial.
+// The archive audit retries rebuilds that startup could not finish.
 func logPendingArchiveRebuild() {
 	log.Printf("ERROR: required archive rebuild did not complete for data version %d; serving the existing archive, retrying in %s", db.CurrentDataVersion(), archiveAuditRetryInitial)
 }

@@ -217,10 +217,6 @@ func TestInsightGenerateCommand_StreamsAndSaves(t *testing.T) {
 	ts = httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter, r *http.Request,
 	) {
-		if strings.HasSuffix(r.URL.Path, "/api/v1/sync/status") {
-			writeJSONResponse(w, `{"archive_stale":false}`)
-			return
-		}
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, "/prefix/path/api/v1/insights/generate", r.URL.Path)
 		assert.Empty(t, r.URL.RawQuery)
@@ -291,10 +287,6 @@ func TestInsightGenerateCommand_ErrorEvent(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter, r *http.Request,
 	) {
-		if strings.HasSuffix(r.URL.Path, "/api/v1/sync/status") {
-			writeJSONResponse(w, `{"archive_stale":false}`)
-			return
-		}
 		assert.Equal(t, http.MethodPost, r.Method)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, err := io.WriteString(w,
@@ -420,10 +412,6 @@ func TestInsightGenerateCommand_RejectsCompletionWithoutOutput(t *testing.T) {
 			ts := httptest.NewServer(http.HandlerFunc(func(
 				w http.ResponseWriter, r *http.Request,
 			) {
-				if strings.HasSuffix(r.URL.Path, "/api/v1/sync/status") {
-					writeJSONResponse(w, `{"archive_stale":false}`)
-					return
-				}
 				assert.Equal(t, http.MethodPost, r.Method)
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, err := io.WriteString(w, tc.body)
@@ -493,10 +481,6 @@ func TestInsightTransportModes(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(
 			w http.ResponseWriter, r *http.Request,
 		) {
-			if strings.HasSuffix(r.URL.Path, "/api/v1/sync/status") {
-				writeJSONResponse(w, `{"archive_stale":false}`)
-				return
-			}
 			assert.Equal(t, "/api/v1/insights/generate", r.URL.Path)
 			w.WriteHeader(http.StatusNotImplemented)
 			writeInsightJSON(t, w, map[string]string{

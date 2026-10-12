@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,9 +20,16 @@ func TestRawRequestTracksFreshnessWithoutReadingBodies(t *testing.T) {
 			release := make(chan struct{})
 			var once sync.Once
 			finish := func() { once.Do(func() { close(release) }) }
+			var attempts atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, http.MethodPost, r.Method)
 				assert.Equal(t, "/api/v1/remote-sync/archive", r.URL.Path)
+				if attempts.Add(1) == 1 {
+					w.Header().Set(ArchiveRebuildingHeader, "true")
+					w.Header().Set("Retry-After", "1")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
 				w.Header().Set("Content-Type", "application/x-tar")
 				w.Header().Set(ArchiveStaleHeader, "true")
 				w.WriteHeader(status)
@@ -41,6 +49,7 @@ func TestRawRequestTracksFreshnessWithoutReadingBodies(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.NotNil(t, response)
+			assert.EqualValues(t, 2, attempts.Load())
 			defer response.Body.Close()
 			assert.Equal(t, status, response.StatusCode)
 			assert.Equal(t, status == http.StatusOK, stale())

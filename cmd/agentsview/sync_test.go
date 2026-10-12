@@ -2099,12 +2099,9 @@ func TestRunDaemonSyncDetectsResyncRequired(t *testing.T) {
 	tests := []struct {
 		name       string
 		withHeader bool
-		stream     bool
 		full       bool
 		wantResync bool
 	}{
-		{name: "stream with recovery marker", stream: true, withHeader: true, wantResync: true},
-		{name: "stream without recovery marker", stream: true},
 		{name: "409 with header on sync", withHeader: true, wantResync: true},
 		{name: "409 without header", withHeader: false, wantResync: false},
 		{name: "409 with header on resync", withHeader: true, full: true},
@@ -2112,11 +2109,6 @@ func TestRunDaemonSyncDetectsResyncRequired(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ts := syncRouteTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
-				if tt.stream {
-					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = fmt.Fprintf(w, "event: error\ndata: {\"error\":\"build failed\",\"resync_required\":%t}\n\n", tt.withHeader)
-					return
-				}
 				if tt.withHeader {
 					w.Header().Set(server.ResyncRequiredHeader, "true")
 				}
@@ -2129,11 +2121,7 @@ func TestRunDaemonSyncDetectsResyncRequired(t *testing.T) {
 			require.Error(t, err)
 			assert.Equal(t, tt.wantResync,
 				errors.Is(err, errDaemonResyncRequired))
-			if tt.stream {
-				assert.Contains(t, err.Error(), "build failed")
-			} else {
-				assert.Contains(t, err.Error(), "HTTP 409")
-			}
+			assert.Contains(t, err.Error(), "HTTP 409")
 		})
 	}
 }
@@ -2208,6 +2196,7 @@ token = "remote-token"
 	})
 
 	require.False(t, hadFailures)
+	assert.Contains(t, out, "Running sync with remotes via daemon...")
 	assert.Contains(t, out, "Resolving agent directories on devbox")
 	assert.True(t, strings.HasSuffix(out, "\n"), "progress output should finish on a newline")
 	env.assertNoLocalDB(t)
@@ -2596,11 +2585,6 @@ func daemonRouteTestServer(
 		}
 		if h, ok := routes[r.URL.Path]; ok {
 			h(w, r)
-			return
-		}
-		if r.URL.Path == "/api/v1/sync/status" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"archive_stale":false}`))
 			return
 		}
 		http.NotFound(w, r)

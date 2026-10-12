@@ -4739,16 +4739,6 @@ func (e *Engine) FinishStartupReconciled(stats SyncStats) {
 	e.notifyStartupReconciled()
 }
 
-// WaitStartupAttempt waits for either startup outcome or caller cancellation.
-func (e *Engine) WaitStartupAttempt(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-e.startupAttemptReady:
-		return nil
-	}
-}
-
 // StartupAttemptCompleted reports completion even when startup failed.
 func (e *Engine) StartupAttemptCompleted() bool {
 	select {

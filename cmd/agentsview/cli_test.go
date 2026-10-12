@@ -442,7 +442,7 @@ func TestServerCommandContextSkipsCLIArchiveFreshnessWarning(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set(apiclient.ArchiveStaleHeader, "true")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"archive_stale":true,"last_sync":"","stats":{}}`))
+		_, _ = w.Write([]byte(`{"sessions":[],"machine_labels":{}}`))
 	}))
 	defer ts.Close()
 	for _, tc := range []struct {
@@ -461,7 +461,7 @@ func TestServerCommandContextSkipsCLIArchiveFreshnessWarning(t *testing.T) {
 			}
 			api, err := apiclient.NewHTTPClient(ts.URL, "", ts.Client())
 			require.NoError(t, err)
-			_, err = api.GetAPIV1SyncStatusWithResponse(ctx)
+			_, err = api.GetAPIV1SessionsWithResponse(ctx, &apiclient.GetAPIV1SessionsRequestOptions{})
 			require.NoError(t, err)
 			assert.Equal(t, tc.warned, warned.Load())
 		})

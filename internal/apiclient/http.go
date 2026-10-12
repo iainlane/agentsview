@@ -2,12 +2,17 @@ package apiclient
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/doordash-oss/oapi-codegen-dd/v3/pkg/runtime"
+
+	"go.kenn.io/agentsview/internal/httputil"
 )
 
 // NewHTTPClient connects the generated API to the selected daemon transport.
@@ -31,14 +36,13 @@ func NewHTTPClient(baseURL, token string, client *http.Client) (*Client, error) 
 type httpTransport struct{ *http.Client }
 
 func (c httpTransport) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	response, err := c.Client.Do(req.WithContext(ctx))
-	ObserveArchiveFreshness(ctx, response)
-	return response, err
+	return Do(ctx, c.Client, req)
 }
 
 const (
-	ArchiveStaleHeader  = "X-Agentsview-Archive-Stale"
-	ArchiveStaleWarning = "Archive results may be stale."
+	ArchiveRebuildingHeader = "X-Agentsview-Archive-Rebuilding"
+	ArchiveStaleHeader      = "X-Agentsview-Archive-Stale"
+	ArchiveStaleWarning     = "Archive results may be stale."
 )
 
 type archiveFreshnessKey struct{}
@@ -61,5 +65,40 @@ func ObserveArchiveFreshness(ctx context.Context, response *http.Response) {
 	}
 	if freshness, ok := ctx.Value(archiveFreshnessKey{}).(*archiveFreshness); ok && freshness.stale.CompareAndSwap(false, true) && freshness.onStale != nil {
 		freshness.onStale()
+	}
+}
+
+// Do retries writes refused before dispatch during a startup archive rebuild.
+func Do(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
+	req = req.WithContext(ctx)
+	waiting := false
+	for {
+		response, err := client.Do(req)
+		if err != nil || response.StatusCode != http.StatusServiceUnavailable || response.Header.Get(ArchiveRebuildingHeader) != "true" || (req.Body != nil && req.Body != http.NoBody && req.GetBody == nil) {
+			ObserveArchiveFreshness(ctx, response)
+			return response, err
+		}
+		delay := httputil.ParseRetryAfter(response.Header.Get("Retry-After"))
+		if delay <= 0 {
+			delay = time.Second
+		}
+		response.Body.Close()
+		if !waiting {
+			fmt.Fprintln(os.Stderr, "waiting for archive rebuild")
+			waiting = true
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		if req.GetBody != nil {
+			req.Body, err = req.GetBody()
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 }

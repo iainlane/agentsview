@@ -199,6 +199,10 @@ func TestServeSkipInitialSyncServesWhileReparsingStaleArchive(t *testing.T) {
 				require.NoError(t, err)
 				require.NoError(t, conn.Close())
 			}
+			needsResync, fullRebuild, err := db.ArchiveResyncState(t.Context(), cfg.DBPath)
+			require.NoError(t, err)
+			assert.True(t, needsResync)
+			assert.Equal(t, archive == "data version", fullRebuild)
 			data, err := json.Marshal(cfg)
 			require.NoError(t, err)
 			out, err := runRuntimeWarningHelperProcess(t, "serve", "TestServeStaleArchiveHelperProcess",

@@ -2047,10 +2047,25 @@ func ArchiveNeedsResync(ctx context.Context, path string) (bool, error) {
 	return schemaStale || dataStale, err
 }
 
-// ArchiveNeedsDataVersionRebuild excludes scoped upgrades and schema repairs.
-func ArchiveNeedsDataVersionRebuild(ctx context.Context, path string) (bool, error) {
-	_, dataStale, err := probeDatabase(ctx, path, false)
-	return dataStale, err
+// ArchiveResyncState distinguishes startup reparsing from a full parser rebuild.
+func ArchiveResyncState(ctx context.Context, path string) (needsResync, fullRebuild bool, err error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("checking database file: %w", err)
+	}
+	conn, err := sql.Open(sqliteArchiveDriverName, makeDSN(path, true))
+	if err != nil {
+		return false, false, fmt.Errorf("probing schema: %w", err)
+	}
+	defer conn.Close()
+	schema, fullRebuild, err := probeDatabaseConn(ctx, conn, false)
+	if err != nil || schema || fullRebuild {
+		return schema || fullRebuild, fullRebuild, err
+	}
+	_, needsResync, err = probeDatabaseConn(ctx, conn, true)
+	return needsResync, false, err
 }
 
 // probeDatabase checks an existing database for schema and data staleness.

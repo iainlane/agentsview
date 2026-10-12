@@ -279,8 +279,7 @@ func doInsightRequest(
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := (&http.Client{Timeout: 0}).Do(req)
-	apiclient.ObserveArchiveFreshness(ctx, resp)
+	resp, err := apiclient.Do(ctx, &http.Client{Timeout: 0}, req)
 	if err != nil {
 		return nil, err
 	}
@@ -316,9 +315,6 @@ func postInsightGenerate(
 	req insightGenerateRequest,
 	progress io.Writer,
 ) (*db.Insight, error) {
-	if err := waitDaemonStartupRebuild(ctx, transport{URL: insightRequestBaseURL(tr.URL)}, token); err != nil {
-		return nil, err
-	}
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("encoding insight request: %w", err)

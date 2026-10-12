@@ -431,12 +431,9 @@ An older archive that requires reparsing stays readable through the daemon while
 rebuilds it in the background. Archive-only mode finishes its preservation
 rebuild before listening. The status bar warns that results may be stale
 until the replacement is installed, and keeps the warning if rebuilding fails.
-During rebuilding, the archive is read-only;
-edits return HTTP 503 with `Retry-After`. Retry after the rebuild finishes.
-Competing resync, remote sync, session sync, and push requests return HTTP 409;
-push requests return HTTP 503 once the writer closes. `POST /api/v1/sync?wait=true`
-reports waiting while startup rebuilding finishes, then streams the requested pass's
-progress when requested with `Accept: text/event-stream`.
+Writes during the rebuild return HTTP 503 with `Retry-After` and
+`X-Agentsview-Archive-Rebuilding: true`. The CLI prints "waiting for archive
+rebuild" and retries after the rebuild. The browser shows the read-only error.
 HTTP archive responses carry `X-Agentsview-Archive-Stale: true` during this time.
 `GET /api/v1/sync/status` reports `archive_stale` alongside existing rebuild progress.
 With `--no-sync`, the daemon serves the retained archive with stale warnings and leaves rebuilding disabled.
@@ -560,11 +557,9 @@ its idle timeout expires. The command prints the server URL and how to stop it.
 An incremental local-only sync through the default daemon waits when another
 sync or maintenance pass owns it, then runs its requested pass. It prints
 waiting status; `Ctrl+C` cancels the wait without stopping the existing work.
-Full sync, sync with remote hosts, session sync, and replica or mirror pushes
-wait for an upgrade rebuild before submitting their writes. `Ctrl+C` cancels
-the wait. If the wait persists,
-inspect `agentsview daemon status` and `serve.log`. A daemon launched for this
-local sync skips its redundant startup sync.
+CLI writes retry the rebuild's HTTP 503 response. `Ctrl+C` cancels the wait.
+If the wait persists, inspect `agentsview daemon status` and `serve.log`.
+A daemon launched for this local sync skips its redundant startup sync.
 
 For a one-shot offline sync, stop the writable daemon first, then run:
 

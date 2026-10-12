@@ -374,10 +374,6 @@ func TestPostMemoryRefreshTargetsAuthenticatedQueueRoute(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter, r *http.Request,
 	) {
-		if r.URL.Path == "/memory-base/api/v1/sync/status" {
-			writeJSONResponse(w, `{"archive_stale":false}`)
-			return
-		}
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, "/memory-base/api/v1/memory/refresh", r.URL.Path)
 		assert.Equal(t, serverURL, r.Header.Get("Origin"))

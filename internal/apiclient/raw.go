@@ -35,11 +35,10 @@ type rawTransport struct {
 }
 
 func (t *rawTransport) ExecuteRequest(ctx context.Context, req *http.Request, _ string) (*runtime.Response, error) {
-	response, err := t.client.Do(req.WithContext(ctx)) //nolint:bodyclose // RawRequest transfers the open response to its caller.
+	response, err := Do(ctx, t.client, req) //nolint:bodyclose // RawRequest transfers the open response to its caller.
 	if err != nil {
 		return nil, err
 	}
-	ObserveArchiveFreshness(ctx, response)
 	t.response = response
 	return &runtime.Response{StatusCode: response.StatusCode, Headers: response.Header, Raw: response}, nil
 }

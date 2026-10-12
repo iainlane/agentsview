@@ -240,12 +240,19 @@ func sessionUsageData(ctx context.Context, sessionID string) (*sessionUsageOutpu
 	if err != nil {
 		return nil, tokenUseExitErr, fmt.Errorf("loading config: %w", err)
 	}
+
 	if err := os.MkdirAll(appCfg.DataDir, 0o755); err != nil {
-		return nil, tokenUseExitErr, fmt.Errorf("creating data dir: %w", err)
+		return nil, tokenUseExitErr,
+			fmt.Errorf("creating data dir: %w", err)
 	}
+
+	ctx = commandContext(ctx)
 	backend, cleanup, err := resolveArchiveQueryBackendWithConfig(
-		ctx, appCfg, archiveQueryPolicy{
-			AutoStart: true, ReadOnlyDaemon: archiveQueryUseReadOnlyDaemon,
+		ctx,
+		appCfg,
+		archiveQueryPolicy{
+			AutoStart:            true,
+			ReadOnlyDaemon:       archiveQueryUseReadOnlyDaemon,
 			DirectReadOnlyAction: "refresh session usage directly",
 		},
 	)

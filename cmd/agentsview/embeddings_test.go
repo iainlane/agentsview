@@ -708,7 +708,6 @@ func TestRunDirectBuildPrintsFailedAttemptResult(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		assert.NoError(t, json.MarshalWrite(w, status))
 	})
-	mux.HandleFunc("GET /api/v1/sync/status", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, `{"archive_stale":false}`) })
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -787,7 +786,6 @@ END`)
 		w.Header().Set("Content-Type", "application/json")
 		assert.NoError(t, json.MarshalWrite(w, status))
 	})
-	mux.HandleFunc("GET /api/v1/sync/status", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, `{"archive_stale":false}`) })
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -1360,7 +1358,6 @@ func startEmbeddingsTestDaemon(
 	for pattern, h := range handlers {
 		mux.HandleFunc(pattern, h)
 	}
-	mux.HandleFunc("GET /api/v1/sync/status", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, `{"archive_stale":false}`) })
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -1471,10 +1468,6 @@ func TestEmbeddingsDaemonClientOriginOmitsBasePath(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter, r *http.Request,
 	) {
-		if r.URL.Path == "/viewer/api/v1/sync/status" {
-			writeJSONResponse(w, `{"archive_stale":false}`)
-			return
-		}
 		gotPath = r.URL.Path
 		gotOrigin = r.Header.Get("Origin")
 		w.Header().Set("Content-Type", "application/json")
@@ -1585,7 +1578,6 @@ func TestBuildViaDaemonConflictThenPolls(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.MarshalWrite(w, status)
 	})
-	mux.HandleFunc("GET /api/v1/sync/status", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, `{"archive_stale":false}`) })
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -1621,7 +1613,6 @@ func TestBuildViaDaemonAlwaysSendsIncludeAutomated(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.MarshalWrite(w, vector.BuildStatus{Running: false})
 			})
-			mux.HandleFunc("GET /api/v1/sync/status", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, `{"archive_stale":false}`) })
 			srv := httptest.NewServer(mux)
 			defer srv.Close()
 
@@ -1663,7 +1654,6 @@ func TestBuildViaDaemonLastErrorReturnsNonZero(t *testing.T) {
 			},
 		})
 	})
-	mux.HandleFunc("GET /api/v1/sync/status", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, `{"archive_stale":false}`) })
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

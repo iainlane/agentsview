@@ -208,13 +208,6 @@ func (s *Server) requireSourceSync(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) rejectStartupRebuild() error {
-	if s.startupRebuildPending() {
-		return apiError(http.StatusConflict, syncpkg.ErrSyncInProgress.Error())
-	}
-	return nil
-}
-
 func (s *Server) syncEngineForRequest(ctx context.Context) (*syncpkg.Engine, error) {
 	if err := s.requireSourceSync(ctx); err != nil {
 		return nil, err
@@ -275,31 +268,15 @@ func (s *Server) humaTriggerSync(
 			return nil, err
 		}
 	}
-	if !in.Wait && s.startupRebuildPending() {
-		return nil, apiError(http.StatusConflict, syncpkg.ErrSyncInProgress.Error())
-	}
-	if !s.startupRebuildPending() {
-		if err := s.rejectStaleArchiveForSync(); err != nil {
-			return nil, err
-		}
+	if err := s.rejectStaleArchiveForSync(); err != nil {
+		return nil, err
 	}
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
 		stream, ok := newHumaSSEStream(hctx)
 		if !ok {
 			stats, err := s.runSyncWhenReady(ctx, engine, *in, nil)
 			if err != nil {
-				status := http.StatusInternalServerError
-				if statusErr, ok := errors.AsType[huma.StatusError](err); ok {
-					status = statusErr.GetStatus()
-				}
-				if headers, ok := errors.AsType[huma.HeadersError](err); ok {
-					for name, values := range headers.GetHeaders() {
-						for _, value := range values {
-							hctx.AppendHeader(name, value)
-						}
-					}
-				}
-				writeHumaJSON(hctx, status,
+				writeHumaJSON(hctx, http.StatusInternalServerError,
 					apiResponseError{Message: err.Error()})
 				return
 			}
@@ -310,9 +287,7 @@ func (s *Server) humaTriggerSync(
 			stream.SendJSON("progress", p)
 		})
 		if err != nil {
-			headers, ok := errors.AsType[huma.HeadersError](err)
-			required := ok && headers.GetHeaders().Get(ResyncRequiredHeader) != ""
-			stream.SendJSON("error", map[string]any{"error": err.Error(), "resync_required": required})
+			stream.SendJSON("error", map[string]string{"error": err.Error()})
 			return
 		}
 		stream.SendJSON("done", stats)
@@ -328,17 +303,6 @@ func (s *Server) runSyncWhenReady(
 ) (syncpkg.SyncStats, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return syncpkg.SyncStats{}, err
-		}
-		if s.startupRebuildPending() {
-			if progress != nil {
-				progress(syncpkg.Progress{Detail: "Waiting for startup archive rebuild", Hint: "Ctrl+C to cancel"})
-			}
-			if err := engine.WaitStartupAttempt(ctx); err != nil {
-				return syncpkg.SyncStats{}, err
-			}
-		}
-		if err := s.rejectStaleArchiveForSync(); err != nil {
 			return syncpkg.SyncStats{}, err
 		}
 		if in.StartupOnly && (engine == nil || engine.StartupReconciled()) {
@@ -388,7 +352,8 @@ func (s *Server) rejectStaleArchiveForSync() error {
 	if s.localSyncRunner == nil {
 		return nil
 	}
-	if !s.archiveStale() {
+	local, ok := s.db.(*db.DB)
+	if !ok || !local.NeedsResync() {
 		return nil
 	}
 	return huma.ErrorWithHeaders(
@@ -436,9 +401,6 @@ func (s *Server) humaTriggerResync(
 ) (*huma.StreamResponse, error) {
 	engine, err := s.syncEngineForRequest(ctx)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.rejectStartupRebuild(); err != nil {
 		return nil, err
 	}
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
@@ -505,9 +467,6 @@ func (s *Server) humaSyncRemotes(
 	engine := s.syncEngineForLocal(ctx, local)
 	hosts, err := s.resolveRemoteSyncHosts(in.Body.Hosts)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.rejectStartupRebuild(); err != nil {
 		return nil, err
 	}
 	req := in.Body
@@ -1114,9 +1073,6 @@ func (s *Server) humaSyncSession(
 	}
 	if in.Body.Subagents && in.Body.ID == "" {
 		return nil, apiError(http.StatusBadRequest, "'subagents' requires 'id'")
-	}
-	if err := s.rejectStartupRebuild(); err != nil {
-		return nil, err
 	}
 	if err := s.resyncBeforeSessionSync(ctx); err != nil {
 		if errors.Is(err, context.Canceled) {

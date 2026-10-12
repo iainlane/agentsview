@@ -958,11 +958,6 @@ func runDaemonSync(
 	full bool,
 	onProgress sync.ProgressFunc,
 ) (sync.SyncStats, error) {
-	if full {
-		if err := waitDaemonStartupRebuild(ctx, tr, authToken); err != nil {
-			return sync.SyncStats{}, err
-		}
-	}
 	api, err := apiclient.NewHTTPClient(tr.URL, authToken, &http.Client{Timeout: 0})
 	if err != nil {
 		return sync.SyncStats{}, err
@@ -983,13 +978,6 @@ func runDaemonSync(
 		}
 		resp, body, stream = response.HTTPResponse, response.Body, response.Stream200
 	}
-	return consumeDaemonSyncResponse(resp, body, stream, full, onProgress)
-}
-
-func consumeDaemonSyncResponse(
-	resp *http.Response, body []byte, stream *runtime.Stream[[]byte],
-	full bool, onProgress sync.ProgressFunc,
-) (sync.SyncStats, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg := body
@@ -1024,9 +1012,6 @@ func runDaemonRemoteSync(
 	includeLocal bool,
 	onProgress sync.ProgressFunc,
 ) ([]remoteHostFailure, error) {
-	if err := waitDaemonStartupRebuild(ctx, tr, authToken); err != nil {
-		return nil, err
-	}
 	api, err := apiclient.NewHTTPClient(tr.URL, authToken, &http.Client{Timeout: 0})
 	if err != nil {
 		return nil, err
@@ -1138,14 +1123,6 @@ func consumeDaemonSyncEvents(stream *runtime.Stream[[]byte], progressFns ...sync
 	for stream.Next() {
 		frame := stream.Event()
 		switch frame.Type {
-		case "error":
-			var failure struct {
-				ResyncRequired bool `json:"resync_required"`
-			}
-			if json.Unmarshal(frame.Data, &failure) == nil && failure.ResyncRequired {
-				return sync.SyncStats{}, fmt.Errorf("%w: daemon sync error: %s", errDaemonResyncRequired, frame.Data)
-			}
-			lastNonDoneData = string(frame.Data)
 		case "done":
 			var stats sync.SyncStats
 			if err := json.Unmarshal(frame.Data, &stats); err != nil {

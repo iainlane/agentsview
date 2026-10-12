@@ -1,189 +1,22 @@
 package main
 
 import (
-	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/doordash-oss/oapi-codegen-dd/v3/pkg/runtime"
-	"github.com/spf13/cobra"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/apiclient"
-	"go.kenn.io/agentsview/internal/config"
-	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/server"
-	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/storage"
-	"go.kenn.io/agentsview/internal/vector"
 )
-
-func TestCLIWriteWaitsForStartupRebuild(t *testing.T) {
-	for _, command := range []string{"full", "remote", "replica", "recall local", "recall server", "secrets", "memory", "insight", "embeddings build", "embeddings activate", "embeddings retire"} {
-		outcomes := []string{"success"}
-		if command == "full" {
-			outcomes = append(outcomes, "cancel", "failed rebuild", "current", "transport failure")
-		}
-		for _, outcome := range outcomes {
-			t.Run(command+"/"+outcome, func(t *testing.T) {
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				var warned atomic.Bool
-				ctx, _ = apiclient.TrackArchiveFreshness(ctx, func() { warned.Store(true) })
-				entered := make(chan struct{})
-				release := make(chan struct{})
-				defer close(release)
-				var writes atomic.Int32
-				write := func(w http.ResponseWriter, _ *http.Request) {
-					writes.Add(1)
-					w.Header().Set("Content-Type", "application/json")
-					_, _ = w.Write([]byte(`{}`))
-				}
-				ts := daemonRouteTestServer(t, map[string]http.HandlerFunc{
-					"/api/v1/sync/status": func(w http.ResponseWriter, _ *http.Request) {
-						w.Header().Set(apiclient.ArchiveStaleHeader, "true")
-						w.Header().Set("Content-Type", "application/json")
-						if outcome == "transport failure" {
-							w.WriteHeader(http.StatusServiceUnavailable)
-							return
-						}
-						_, _ = fmt.Fprintf(w, `{"archive_stale":%t}`, outcome != "current")
-					},
-					"/api/v1/sync": func(w http.ResponseWriter, r *http.Request) {
-						w.Header().Set(apiclient.ArchiveStaleHeader, "true")
-						assert.Equal(t, "true", r.URL.Query().Get("wait"))
-						assert.Equal(t, "true", r.URL.Query().Get("startup_only"))
-						w.Header().Set("Content-Type", "text/event-stream")
-						w.(http.Flusher).Flush()
-						close(entered)
-						select {
-						case <-r.Context().Done():
-							return
-						case <-release:
-						}
-						if outcome == "failed rebuild" {
-							_, _ = w.Write([]byte("event: error\ndata: {\"resync_required\":true}\n\n"))
-						} else {
-							_, _ = w.Write([]byte("event: done\ndata: {}\n\n"))
-						}
-					},
-					"/api/v1/resync":        write,
-					"/api/v1/sync/remotes":  write,
-					"/api/v1/push/pg":       write,
-					"/api/v1/recall/import": write,
-					"/api/v1/secrets/scan":  write,
-					"/api/v1/memory/refresh": func(w http.ResponseWriter, r *http.Request) {
-						w.WriteHeader(http.StatusAccepted)
-						write(w, r)
-					},
-					"/api/v1/insights/generate": func(w http.ResponseWriter, _ *http.Request) {
-						writes.Add(1)
-						_, _ = w.Write([]byte("event: done\ndata: {\"id\":1}\n\n"))
-					},
-					"/api/v1/embeddings/build": func(w http.ResponseWriter, r *http.Request) {
-						w.WriteHeader(http.StatusAccepted)
-						write(w, r)
-					},
-					"/api/v1/embeddings/generations/1/activate": func(w http.ResponseWriter, _ *http.Request) {
-						writes.Add(1)
-						w.WriteHeader(http.StatusNoContent)
-					},
-					"/api/v1/embeddings/generations/1/retire": func(w http.ResponseWriter, _ *http.Request) {
-						writes.Add(1)
-						w.WriteHeader(http.StatusNoContent)
-					},
-				})
-				cfg := config.Config{DataDir: daemonRuntimeDir(t)}
-				t.Setenv("AGENTSVIEW_DATA_DIR", cfg.DataDir)
-				registerSyncRouteTestRuntime(t, cfg.DataDir, ts.URL)
-				done := make(chan error, 1)
-				go func() {
-					var err error
-					tr := transport{Mode: transportHTTP, URL: ts.URL}
-					switch command {
-					case "full":
-						_, err = runDaemonSync(ctx, tr, "", true, nil)
-					case "remote":
-						_, err = runDaemonRemoteSync(ctx, tr, "", nil, false, true, nil)
-					case "recall local", "recall server", "secrets":
-						cmd := &cobra.Command{}
-						cmd.SetContext(ctx)
-						cmd.Flags().String("server", "", "")
-						if command == "recall server" {
-							err = cmd.Flags().Set("server", ts.URL)
-						}
-						var cleanup func()
-						svc, cleanup, err := resolveWritableService(cmd)
-						if err == nil {
-							defer cleanup()
-							if command == "secrets" {
-								_, err = svc.ScanSecrets(ctx, service.SecretScanInput{}, nil)
-							} else {
-								_, err = svc.ImportRecallEntries(ctx, strings.NewReader("{}"), db.RecallImportOptions{})
-							}
-						}
-					case "memory":
-						err = postMemoryRefresh(ctx, ts.URL, "")
-					case "insight":
-						_, err = postInsightGenerate(ctx, tr, "", insightGenerateRequest{}, io.Discard)
-					case "embeddings build":
-						err = (embeddingsDaemonClient{baseURL: ts.URL}).startBuild(ctx, vector.BuildRequest{})
-					case "embeddings activate":
-						err = (embeddingsDaemonClient{baseURL: ts.URL}).activate(ctx, 1, false)
-					case "embeddings retire":
-						err = (embeddingsDaemonClient{baseURL: ts.URL}).retire(ctx, 1, false)
-					default:
-						var backend archiveWriteBackend
-						var cleanup func()
-						backend, cleanup, err = resolveArchiveWriteBackend(ctx, cfg, transportIntentArchiveWrite)
-						if err == nil {
-							defer cleanup()
-							_, err = backend.ReplicaPush(ctx, pgReplica{}, storage.ConfiguredReplica{}, ReplicaPushConfig{}, nil, nil)
-						}
-					}
-					done <- err
-				}()
-				if outcome != "current" && outcome != "transport failure" {
-					select {
-					case <-entered:
-					case err := <-done:
-						require.FailNow(t, "write returned before waiting for startup rebuilding", "%v", err)
-					case <-time.After(5 * time.Second):
-						require.FailNow(t, "write never reached the startup waiter")
-					}
-					assert.Zero(t, writes.Load(), "writes must wait for the startup attempt")
-					if outcome == "cancel" {
-						cancel()
-					} else {
-						release <- struct{}{}
-					}
-				}
-				err := <-done
-				assert.False(t, warned.Load(), "startup probes must not report stale command output")
-				switch outcome {
-				case "cancel":
-					require.ErrorIs(t, err, context.Canceled)
-					assert.Zero(t, writes.Load())
-				case "transport failure":
-					require.ErrorContains(t, err, "503")
-					assert.Zero(t, writes.Load())
-				default:
-					require.NoError(t, err)
-					assert.EqualValues(t, 1, writes.Load())
-				}
-			})
-		}
-	}
-}
 
 func TestParseDaemonPushSSE(t *testing.T) {
 	stream := func(events ...string) string {
