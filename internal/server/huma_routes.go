@@ -113,15 +113,7 @@ func configureHuma() {
 			if status == http.StatusInternalServerError {
 				for _, err := range errs {
 					if errors.Is(err, db.ErrWriterClosed) {
-						closed := writerClosedError()
-						headers, _ := errors.AsType[huma.HeadersError](closed)
-						for key, values := range headers.GetHeaders() {
-							for _, value := range values {
-								ctx.AppendHeader(key, value)
-							}
-						}
-						response, _ := errors.AsType[huma.StatusError](closed)
-						return response
+						return writerClosedResponse(ctx.AppendHeader)
 					}
 				}
 			}
@@ -516,13 +508,17 @@ func handleHumaReadOnly(err error) error {
 // writerClosedError is the 503 + Retry-After response for a write rejected while
 // the archive writer is closed for a maintenance pass.
 func writerClosedError() error {
-	return huma.ErrorWithHeaders(
-		apiError(
-			http.StatusServiceUnavailable,
-			"archive is read-only while it rebuilds",
-		),
-		http.Header{"Retry-After": []string{writerClosedRetryAfterSeconds}},
-	)
+	headers := http.Header{}
+	response := writerClosedResponse(headers.Add)
+	return huma.ErrorWithHeaders(response, headers)
+}
+
+func writerClosedResponse(appendHeader func(string, string)) *apiResponseError {
+	appendHeader("Retry-After", writerClosedRetryAfterSeconds)
+	return &apiResponseError{
+		Status:  http.StatusServiceUnavailable,
+		Message: "archive is read-only while it rebuilds",
+	}
 }
 
 // rejectWriterClosedWrite fails a write endpoint before its stream body opens

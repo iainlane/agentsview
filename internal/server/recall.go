@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danielgtaylor/huma/v2"
-
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	recallextract "go.kenn.io/agentsview/internal/recall/extract"
@@ -37,14 +35,7 @@ func handleReadOnly(w http.ResponseWriter, err error) bool {
 		return true
 	}
 	if errors.Is(err, db.ErrWriterClosed) {
-		closed := writerClosedError()
-		headers, _ := errors.AsType[huma.HeadersError](closed)
-		for key, values := range headers.GetHeaders() {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-		response, _ := errors.AsType[huma.StatusError](closed)
+		response := writerClosedResponse(w.Header().Add)
 		writeError(w, response.GetStatus(), response.Error())
 		return true
 	}
