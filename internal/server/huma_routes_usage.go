@@ -173,21 +173,21 @@ func (s *Server) humaUsageSummary(
 ) (*jsonOutput[UsageSummaryResponse], error) {
 	res, err := s.sessions.UsageSummary(ctx, usageRequestFromInput(*in))
 	if err != nil {
-		return nil, usageSummaryAPIError(err)
+		return nil, s.usageSummaryAPIError(err)
 	}
 	return &jsonOutput[UsageSummaryResponse]{
 		Body: usageSummaryResponseFromService(res),
 	}, nil
 }
 
-func usageSummaryAPIError(err error) error {
+func (s *Server) usageSummaryAPIError(err error) error {
 	if ue, ok := errors.AsType[*service.UsageInputError](err); ok {
 		return usageInputAPIError(ue)
 	}
 	if handled := handleHumaContextError(err); handled != nil {
 		return handled
 	}
-	if handled := handleHumaReadOnly(err); handled != nil {
+	if handled := s.handleHumaReadOnly(err); handled != nil {
 		return handled
 	}
 	return internalError("usage summary error", err)
@@ -218,7 +218,7 @@ func (s *Server) humaUsageSummaryStream(
 		req.Progress("Preparing usage report from the archive")
 		summary, err := s.sessions.UsageSummary(ctx, req)
 		if err != nil {
-			if err := usageSummaryAPIError(err); err != nil {
+			if err := s.usageSummaryAPIError(err); err != nil {
 				stream.SendJSON("error", map[string]string{"error": err.Error()})
 			}
 			return
@@ -248,7 +248,7 @@ func (s *Server) humaUsageComparison(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("usage comparison error", err)
@@ -275,7 +275,7 @@ func (s *Server) humaUsagePairwiseComparison(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("usage pairwise comparison error", err)
@@ -370,7 +370,7 @@ func (s *Server) humaUsageTopSessions(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("usage top sessions error", err)

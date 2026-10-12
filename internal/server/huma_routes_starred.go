@@ -46,7 +46,7 @@ func (s *Server) humaStarSession(ctx context.Context,
 ) (*noContentOutput, error) {
 	ok, err := s.db.StarSession(ctx, in.ID)
 	if err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("star session", err)
@@ -61,7 +61,7 @@ func (s *Server) humaUnstarSession(ctx context.Context,
 	in *idPathInput,
 ) (*noContentOutput, error) {
 	if err := s.db.UnstarSession(ctx, in.ID); err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("unstar session", err)
@@ -76,7 +76,7 @@ func (s *Server) humaBulkStar(ctx context.Context,
 		return &noContentOutput{Status: http.StatusNoContent}, nil
 	}
 	if err := s.db.BulkStarSessions(ctx, in.Body.SessionIDs); err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("bulk star", err)

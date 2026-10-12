@@ -110,7 +110,7 @@ func (s *Server) humaGetSessionStats(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		if inputErr, ok := errors.AsType[*db.StatsInputError](err); ok {

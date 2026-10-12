@@ -217,7 +217,7 @@ func TestServeSkipInitialSyncServesWhileReparsingStaleArchive(t *testing.T) {
 			} else {
 				assert.Contains(t, string(out), "archive reparsed before readiness")
 			}
-			stale, err := db.ArchiveNeedsResync(t.Context(), cfg.DBPath)
+			stale, _, err := db.ArchiveResyncState(t.Context(), cfg.DBPath)
 			require.NoError(t, err)
 			assert.False(t, stale, "the required reparse must eventually install its replacement")
 			serveLog, err := os.ReadFile(filepath.Join(cfg.DataDir, "debug.log"))
@@ -253,6 +253,14 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 		dataDir, host string, port int, version, browserURL string, readOnly,
 		requireAuth, noSync bool, explicitPort *int, caddyPID ...int,
 	) (string, error) {
+		if os.Getenv("AGENTSVIEW_STALE_SERVE_KIND") == "" {
+			runtime, err := original(dataDir, host, port, version, browserURL, readOnly, requireAuth, noSync, explicitPort, caddyPID...)
+			if err != nil {
+				return fail(err)
+			}
+			fmt.Println("archive runtime published")
+			return runtime, nil
+		}
 		backgroundRebuild := os.Getenv("AGENTSVIEW_STALE_SERVE_KIND") == "data version"
 		base := fmt.Sprintf("http://%s:%d", host, port)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/sessions/retained/messages", nil)
@@ -279,7 +287,7 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 			return fail(fmt.Errorf("retained transcript missing from messages: %s", body))
 		}
 		if !backgroundRebuild {
-			stale, err := db.ArchiveNeedsResync(ctx, cfg.DBPath)
+			stale, _, err := db.ArchiveResyncState(ctx, cfg.DBPath)
 			if err != nil || stale {
 				return fail(fmt.Errorf("archive still needs startup sync: stale=%t err=%v", stale, err))
 			}
@@ -319,6 +327,12 @@ func TestServeStaleArchiveHelperProcess(t *testing.T) {
 		}()
 		return original(dataDir, host, port, version, browserURL, readOnly, requireAuth, noSync, explicitPort, caddyPID...)
 	}
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() && scanner.Text() == "stop" {
+			cancel()
+		}
+	}()
 	runServe(ctx, cfg, serveOptions{SkipInitialSync: true}, 0)
 	cancel()
 	if pollDone != nil {
@@ -399,7 +413,11 @@ func runRuntimeWarningHelperProcess(
 		}
 		if !observed && strings.Contains(line, marker) {
 			observed = true
-			stopErr = cmd.Cancel()
+			if testName == "TestServeStaleArchiveHelperProcess" {
+				_, stopErr = io.WriteString(stdin, "stop\n")
+			} else {
+				stopErr = cmd.Cancel()
+			}
 		}
 	}
 	scanErr := scanner.Err()
@@ -420,7 +438,7 @@ func runRuntimeWarningHelperProcess(
 				helperName, stopErr, combined,
 			)
 		}
-		if _, ok := errors.AsType[*exec.ExitError](waitErr); waitErr != nil && !ok {
+		if _, ok := errors.AsType[*exec.ExitError](waitErr); waitErr != nil && (!ok || testName == "TestServeStaleArchiveHelperProcess") {
 			return combined, fmt.Errorf(
 				"wait for stopped %s helper after stdout marker: %w\noutput:\n%s",
 				helperName, waitErr, combined,

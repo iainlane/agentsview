@@ -182,7 +182,7 @@ func (s *Server) humaDeleteInsight(
 		return nil, err
 	}
 	if err := s.db.DeleteInsight(ctx, in.ID); err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, serverError(err)

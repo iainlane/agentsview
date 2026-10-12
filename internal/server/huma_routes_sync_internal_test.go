@@ -2342,40 +2342,53 @@ func newStartupRebuildFixture(t *testing.T) (*syncRouteFixture, *syncpkg.Engine)
 
 func TestStartupRebuildWriteGate(t *testing.T) {
 	f, engine := newStartupRebuildFixture(t)
+	dbtest.SeedSessionWithMessages(t, f.db, "retained", "project", []db.Message{dbtest.UserMsg("retained", 0, "retained transcript")})
+	f.srv.memoryRefreshRequest = func() {}
+	f.srv.telemetryCapture = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	f.srv.registerTelemetryCaptureRoute()
+	require.NoError(t, f.db.CloseWriter())
 	for _, tc := range []struct {
-		method, path string
-		blocked      bool
+		method, path, body string
+		blocked            bool
 	}{
-		{http.MethodPost, "/api/v1/sync?wait=true", true},
-		{http.MethodPost, "/api/v1/resync", true},
-		{http.MethodPost, "/api/v1/sync/remotes", true},
-		{http.MethodPost, "/api/v1/sessions/sync", true},
-		{http.MethodPost, "/api/v1/push/pg", true},
-		{http.MethodPost, "/api/v1/memory/refresh", true},
-		{http.MethodPatch, "/api/v1/sessions/retained", true},
-		{http.MethodDelete, "/api/v1/sessions/retained", true},
-		{http.MethodPut, "/api/v1/config/github", true},
-		{http.MethodPost, "/api/v1/recall/query", false},
-		{http.MethodPost, "/api/v1/remote-sync/manifest", false},
-		{http.MethodPost, "/api/v1/remote-sync/archive", false},
-		{http.MethodPost, "/api/v1/raw-sync/tokens", false},
-		{http.MethodPost, "/api/v1/raw-sync/objects/missing", false},
-		{http.MethodGet, "/api/v1/sessions", false},
-		{http.MethodHead, "/api/v1/sessions", false},
-		{http.MethodOptions, "/api/v1/sessions", false},
+		{http.MethodPost, "/api/v1/sync?wait=true", "", true},
+		{http.MethodPost, "/api/v1/resync", "", true},
+		{http.MethodPost, "/api/v1/sync/remotes", `{"full":false,"hosts":[],"include_local":false}`, true},
+		{http.MethodPost, "/api/v1/sessions/sync", `{"id":"retained"}`, true},
+		{http.MethodPost, "/api/v1/push/pg", `{"full":false}`, true},
+		{http.MethodPatch, "/api/v1/sessions/retained/rename", `{"display_name":"renamed"}`, true},
+		{http.MethodDelete, "/api/v1/sessions/retained", "", true},
+		{http.MethodPost, "/api/v1/config/github", `{}`, false},
+		{http.MethodPost, "/api/v1/sessions/retained/resume", `{"command_only":true}`, false},
+		{http.MethodPost, "/api/v1/sessions/retained/open", `{}`, false},
+		{http.MethodPost, "/api/v1/telemetry/events", `{}`, false},
+		{http.MethodPost, "/api/v1/settings/worktree-mappings/preview", `{}`, false},
+		{http.MethodPost, "/api/v1/memory/refresh", "", false},
+		{http.MethodPost, "/api/v1/recall/query", `{}`, false},
+		{http.MethodPost, "/api/v1/remote-sync/manifest", `{}`, false},
+		{http.MethodPost, "/api/v1/remote-sync/archive", `{}`, false},
+		{http.MethodGet, "/api/v1/sessions", "", false},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			w := serveJSON(t, f.handler, tc.method, tc.path, nil)
+			var body any
+			if tc.body != "" {
+				require.NoError(t, json.Unmarshal([]byte(tc.body), &body))
+			}
+			w := serveJSON(t, f.handler, tc.method, tc.path, body)
 			if tc.blocked {
-				assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+				assert.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 				assert.Equal(t, writerClosedRetryAfterSeconds, w.Header().Get("Retry-After"))
 				assert.Equal(t, "true", w.Header().Get("X-Agentsview-Archive-Rebuilding"))
 				assert.Contains(t, w.Body.String(), "archive is read-only")
 			} else {
+				assert.NotEqual(t, http.StatusMethodNotAllowed, w.Code)
+				assert.NotEqual(t, http.StatusNotFound, w.Code, w.Body.String())
 				assert.Empty(t, w.Header().Get("X-Agentsview-Archive-Rebuilding"))
+				assert.NotContains(t, w.Body.String(), "archive is read-only")
 			}
 		})
 	}
+	require.NoError(t, f.db.ReopenWriter())
 	engine.RecordStartupReconciled(syncpkg.SyncStats{}, errors.New("build failed"))
 	w := serveJSON(t, f.handler, http.MethodPost, "/api/v1/sync", nil)
 	assert.Equal(t, http.StatusConflict, w.Code)

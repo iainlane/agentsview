@@ -114,6 +114,7 @@ func newMemorySessionStartCommand() *cobra.Command {
 func runMemorySessionStartCommand(
 	cmd *cobra.Command, pluginRoot string,
 ) error {
+	cmd.SetContext(apiclient.WithArchiveRebuildNotice(cmd.Context(), nil))
 	if err := applyMemorySessionEnv(cmd); err != nil {
 		return err
 	}

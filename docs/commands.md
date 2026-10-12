@@ -421,21 +421,23 @@ On startup, the server:
 
 1. Loads or creates `~/.agentsview/sessions.db`
 1. Runs initial sync across all discovered session directories, or serves the
-    existing archive while a required upgrade rebuild runs in the background
+    existing archive while a full parser-version rebuild runs in the background
 1. Starts the file watcher (500ms event batching; watcher sync starts remain at
     least five seconds apart)
 1. Starts periodic sync (every 15 minutes)
 1. Serves the Svelte SPA and REST API
 
-An older archive that requires reparsing stays readable through the daemon while it
-rebuilds it in the background. Archive-only mode finishes its preservation
-rebuild before listening. The status bar warns that results may be stale
-until the replacement is installed, and keeps the warning if rebuilding fails.
-Writes during the rebuild return HTTP 503 with `Retry-After` and
+Only full parser-version rebuilds run while the daemon serves the retained archive.
+Scoped parser upgrades, schema repairs, and archive-only preservation rebuilds
+finish before the daemon starts listening. The status bar warns that results may
+be stale until the replacement is installed, and keeps the warning if rebuilding
+fails. Archive writes during the rebuild return HTTP 503 with `Retry-After` and
 `X-Agentsview-Archive-Rebuilding: true`. The CLI prints "waiting for archive
 rebuild" and retries after the rebuild. The browser shows the read-only error.
 HTTP archive responses carry `X-Agentsview-Archive-Stale: true` during this time.
 `GET /api/v1/sync/status` reports `archive_stale` alongside existing rebuild progress.
+`session usage` waits for its archive refresh. `usage daily` returns retained data
+with the stale warning.
 With `--no-sync`, the daemon serves the retained archive with stale warnings and leaves rebuilding disabled.
 
 The server shuts down cleanly on `Ctrl+C`, flushing the database and stopping

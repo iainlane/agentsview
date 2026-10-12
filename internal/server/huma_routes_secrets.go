@@ -54,7 +54,7 @@ func (s *Server) humaListSecrets(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, apiError(http.StatusInternalServerError, err.Error())

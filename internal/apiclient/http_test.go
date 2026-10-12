@@ -19,18 +19,23 @@ func (f retryTransport) RoundTrip(req *http.Request) (*http.Response, error) { r
 
 func TestArchiveRebuildRetry(t *testing.T) {
 	for _, tc := range []struct {
-		name                   string
-		header, replay, cancel bool
-		wantCalls              int
+		name                           string
+		header, replay, cancel, notice bool
+		wantCalls                      int
 	}{
-		{"replays body after two rebuild responses", true, true, false, 3},
-		{"ordinary 503", false, true, false, 1},
-		{"body cannot be replayed", true, false, false, 1},
-		{"cancel while waiting", true, true, true, 1},
+		{"replays body after two rebuild responses", true, true, false, true, 3},
+		{"library retry without notice", true, true, false, false, 3},
+		{"ordinary 503", false, true, false, true, 1},
+		{"body cannot be replayed", true, false, false, true, 1},
+		{"cancel while waiting", true, true, true, true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
+				notices := 0
+				if tc.notice {
+					ctx = WithArchiveRebuildNotice(ctx, func() { notices++ })
+				}
 				defer cancel()
 				calls := 0
 				start := time.Now()
@@ -62,6 +67,11 @@ func TestArchiveRebuildRetry(t *testing.T) {
 				}
 				response, err := Do(ctx, client, req)
 				assert.Equal(t, tc.wantCalls, calls)
+				wantNotices := 0
+				if tc.header && tc.replay && tc.notice {
+					wantNotices = 1
+				}
+				assert.Equal(t, wantNotices, notices)
 				if tc.cancel {
 					require.ErrorIs(t, err, context.Canceled)
 					assert.Nil(t, response)

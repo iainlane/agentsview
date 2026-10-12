@@ -2,10 +2,8 @@ package apiclient
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -68,7 +66,14 @@ func ObserveArchiveFreshness(ctx context.Context, response *http.Response) {
 	}
 }
 
-// Do retries writes refused before dispatch during a startup archive rebuild.
+type archiveRebuildNoticeKey struct{}
+
+// WithArchiveRebuildNotice lets a caller report its first rebuild retry.
+func WithArchiveRebuildNotice(ctx context.Context, notice func()) context.Context {
+	return context.WithValue(ctx, archiveRebuildNoticeKey{}, notice)
+}
+
+// Do retries writes refused while the startup rebuild has closed the writer.
 func Do(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
 	req = req.WithContext(ctx)
 	waiting := false
@@ -84,7 +89,9 @@ func Do(ctx context.Context, client *http.Client, req *http.Request) (*http.Resp
 		}
 		response.Body.Close()
 		if !waiting {
-			fmt.Fprintln(os.Stderr, "waiting for archive rebuild")
+			if notice, ok := ctx.Value(archiveRebuildNoticeKey{}).(func()); ok && notice != nil {
+				notice()
+			}
 			waiting = true
 		}
 		timer := time.NewTimer(delay)

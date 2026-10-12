@@ -912,32 +912,11 @@ func archiveFreshnessProbe(path string) bool {
 	return false
 }
 
-// These POSTs only read archive data or negotiate access to it.
-func archiveReadOnlyPost(path string) bool {
-	switch path {
-	case "/api/v1/recall/query", "/api/v1/remote-sync/manifest", "/api/v1/remote-sync/archive", "/api/v1/raw-sync/tokens", "/api/v1/raw-sync/objects/missing":
-		return true
-	}
-	return false
-}
-
 func (s *Server) archiveStaleMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			if !archiveFreshnessProbe(r.URL.Path) && s.archiveStale() {
 				w.Header().Set(apiclient.ArchiveStaleHeader, "true")
-			}
-			read := r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions || r.Method == http.MethodPost && archiveReadOnlyPost(r.URL.Path)
-			if !read && s.startupRebuildPending() {
-				err := writerClosedError().(huma.HeadersError)
-				for name, values := range err.GetHeaders() {
-					for _, value := range values {
-						w.Header().Add(name, value)
-					}
-				}
-				w.Header().Set(apiclient.ArchiveRebuildingHeader, "true")
-				writeError(w, http.StatusServiceUnavailable, err.Error())
-				return
 			}
 		}
 		next.ServeHTTP(w, r)

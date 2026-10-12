@@ -179,6 +179,9 @@ func TestResyncBuildThenSwapMatchesResyncAll(t *testing.T) {
 	e, database, root := newResyncSplitEngine(t)
 	require.NoError(t, os.Remove(filepath.Join(root, "project", "orphan.jsonl")))
 
+	_, err := database.StarSession(t.Context(), "keep0")
+	require.NoError(t, err)
+
 	tempPath, stats, err := e.ResyncBuild(t.Context(), nil)
 	require.NoError(t, err)
 	require.False(t, stats.Aborted)
@@ -195,6 +198,10 @@ func TestResyncBuildThenSwapMatchesResyncAll(t *testing.T) {
 	require.NotNil(t, orphan, "orphan sessions must survive the split resync")
 	assert.Positive(t, stats.TotalSessions)
 	assert.NoFileExists(t, tempPath)
+
+	starred, err := database.ListStarredSessionIDs(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"keep0"}, starred, "user writes before the barrier must survive the swap")
 
 	warm := e.SyncAll(t.Context(), nil)
 	assert.Zero(t, warm.Synced, "persisted skip state must survive the swap")

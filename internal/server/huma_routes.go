@@ -17,6 +17,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"go.kenn.io/agentsview/internal/apiclient"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/timeutil"
 )
@@ -487,25 +488,29 @@ const writerClosedRetryAfterSeconds = "5"
 // maintenance pass is a transient 503 with Retry-After so clients retry once the
 // barrier lifts. It returns nil for any other error. Read endpoints never
 // produce ErrWriterClosed, so folding it in here is safe for every call site.
-func handleHumaReadOnly(err error) error {
+func (s *Server) handleHumaReadOnly(err error) error {
 	if errors.Is(err, db.ErrReadOnly) {
 		return apiError(http.StatusNotImplemented, "not available in remote mode")
 	}
 	if errors.Is(err, db.ErrWriterClosed) {
-		return writerClosedError()
+		return s.writerClosedError()
 	}
 	return nil
 }
 
 // writerClosedError is the 503 + Retry-After response for a write rejected while
 // the archive writer is closed for a maintenance pass.
-func writerClosedError() error {
+func (s *Server) writerClosedError() error {
+	headers := http.Header{"Retry-After": []string{writerClosedRetryAfterSeconds}}
+	if s.startupRebuildPending() {
+		headers.Set(apiclient.ArchiveRebuildingHeader, "true")
+	}
 	return huma.ErrorWithHeaders(
 		apiError(
 			http.StatusServiceUnavailable,
 			"archive is read-only during maintenance or rebuilding; retry after it finishes",
 		),
-		http.Header{"Retry-After": []string{writerClosedRetryAfterSeconds}},
+		headers,
 	)
 }
 
@@ -515,7 +520,7 @@ func writerClosedError() error {
 // 500 (mirrors the push handlers' pre-stream gate).
 func (s *Server) rejectWriterClosedWrite() error {
 	if local, ok := s.db.(*db.DB); ok && local.WriterClosed() {
-		return writerClosedError()
+		return s.writerClosedError()
 	}
 	return nil
 }

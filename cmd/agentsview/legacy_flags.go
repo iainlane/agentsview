@@ -18,6 +18,7 @@ func executeCLIWithLegacyFlagCompat(args []string, stdout, stderr io.Writer) err
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 	ctx, _ := apiclient.TrackArchiveFreshness(context.Background(), func() { fmt.Fprintln(stderr, "Warning: "+apiclient.ArchiveStaleWarning) })
+	ctx = apiclient.WithArchiveRebuildNotice(ctx, func() { fmt.Fprintln(stderr, "waiting for archive rebuild") })
 	cmd.SetContext(ctx)
 
 	normalized, rewrites := normalizeLegacyLongFlags(args, collectLongFlags(cmd))
@@ -128,5 +129,5 @@ func commandContext(ctx context.Context) context.Context {
 // host and never repeat. MCP reports staleness on each tool result instead.
 func serverCommandContext(ctx context.Context) context.Context {
 	ctx, _ = apiclient.TrackArchiveFreshness(commandContext(ctx), nil)
-	return ctx
+	return apiclient.WithArchiveRebuildNotice(ctx, nil)
 }

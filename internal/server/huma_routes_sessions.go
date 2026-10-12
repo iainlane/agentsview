@@ -330,7 +330,7 @@ func (s *Server) humaResolveSessionIDs(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, serverError(err)
@@ -985,7 +985,7 @@ func (s *Server) humaRenameSession(
 		displayName = nil
 	}
 	if err := s.db.RenameSession(ctx, in.ID, displayName); err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("rename session", err)
@@ -1013,7 +1013,7 @@ func (s *Server) humaDeleteSession(
 		return nil, apiError(http.StatusNotFound, "session not found")
 	}
 	if err := s.db.SoftDeleteSession(ctx, in.ID); err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("soft delete session", err)
@@ -1043,7 +1043,7 @@ func (s *Server) humaBatchDeleteSessions(ctx context.Context,
 		return &noContentOutput{Status: http.StatusNoContent}, nil
 	}
 	if _, err := s.db.SoftDeleteSessions(ctx, in.Body.SessionIDs); err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("batch delete sessions", err)
@@ -1057,7 +1057,7 @@ func (s *Server) humaRestoreSession(ctx context.Context,
 ) (*noContentOutput, error) {
 	n, err := s.db.RestoreSession(ctx, in.ID)
 	if err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("restore session", err)
@@ -1074,7 +1074,7 @@ func (s *Server) humaPermanentDeleteSession(ctx context.Context,
 ) (*noContentOutput, error) {
 	n, err := s.db.DeleteSessionIfTrashed(ctx, in.ID)
 	if err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("permanent delete session", err)
@@ -1102,7 +1102,7 @@ func (s *Server) humaEmptyTrash(ctx context.Context,
 ) (*jsonOutput[emptyTrashResponse], error) {
 	count, err := s.db.EmptyTrash(ctx)
 	if err != nil {
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("empty trash", err)
@@ -1384,7 +1384,7 @@ func (s *Server) humaUploadSession(
 			}
 			cleanupCommittedUpload(uploadCommit)
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		if shorter, ok := errors.AsType[*db.SessionWouldShortenError](err); ok {

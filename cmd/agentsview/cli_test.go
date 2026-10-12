@@ -439,7 +439,14 @@ func TestCLIArchiveFreshnessWarning(t *testing.T) {
 }
 
 func TestServerCommandContextSkipsCLIArchiveFreshnessWarning(t *testing.T) {
+	var calls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set(apiclient.ArchiveRebuildingHeader, "true")
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set(apiclient.ArchiveStaleHeader, "true")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"sessions":[],"machine_labels":{}}`))
@@ -454,8 +461,10 @@ func TestServerCommandContextSkipsCLIArchiveFreshnessWarning(t *testing.T) {
 		{name: "server command", server: true, warned: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var warned atomic.Bool
+			calls.Store(0)
+			var warned, waiting atomic.Bool
 			ctx, _ := apiclient.TrackArchiveFreshness(t.Context(), func() { warned.Store(true) })
+			ctx = apiclient.WithArchiveRebuildNotice(ctx, func() { waiting.Store(true) })
 			if tc.server {
 				ctx = serverCommandContext(ctx)
 			}
@@ -464,6 +473,7 @@ func TestServerCommandContextSkipsCLIArchiveFreshnessWarning(t *testing.T) {
 			_, err = api.GetAPIV1SessionsWithResponse(ctx, &apiclient.GetAPIV1SessionsRequestOptions{})
 			require.NoError(t, err)
 			assert.Equal(t, tc.warned, warned.Load())
+			assert.Equal(t, tc.warned, waiting.Load())
 		})
 	}
 }

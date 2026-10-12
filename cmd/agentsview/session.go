@@ -185,8 +185,6 @@ func resolveWritableServiceWithIntent(
 				"is reachable and compatible, or stop it to write locally",
 		)
 	}
-	if tr.Mode == transportHTTP {
-	}
 	return syncService(cmd.Context(), cfg, tr)
 }
 

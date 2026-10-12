@@ -114,7 +114,7 @@ func (s *Server) humaDataProjects(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("get project inventory error", err)
@@ -188,7 +188,7 @@ func (s *Server) humaDataProjectRules(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("list project rules error", err)
@@ -214,7 +214,7 @@ func (s *Server) humaDataCandidates(
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
+		if handled := s.handleHumaReadOnly(err); handled != nil {
 			return nil, handled
 		}
 		return nil, internalError("list archive-wide reclassification candidates error", err)
@@ -265,7 +265,7 @@ func (s *Server) humaDataCompact(
 	if handled := handleHumaContextError(err); handled != nil {
 		return nil, handled
 	}
-	if handled := handleHumaReadOnly(err); handled != nil {
+	if handled := s.handleHumaReadOnly(err); handled != nil {
 		return nil, handled
 	}
 	if err != nil {
@@ -317,7 +317,7 @@ func (s *Server) humaDataStripImagesPreview(
 	if handled := handleHumaContextError(err); handled != nil {
 		return nil, handled
 	}
-	if handled := handleHumaReadOnly(err); handled != nil {
+	if handled := s.handleHumaReadOnly(err); handled != nil {
 		return nil, handled
 	}
 	if err != nil {
@@ -363,7 +363,7 @@ func (s *Server) humaDataStripImages(
 	if handled := handleHumaContextError(err); handled != nil {
 		return nil, handled
 	}
-	if handled := handleHumaReadOnly(err); handled != nil {
+	if handled := s.handleHumaReadOnly(err); handled != nil {
 		return nil, handled
 	}
 	if err != nil {
