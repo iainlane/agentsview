@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"fmt"
+	"slices"
 	"strings"
 
 	"go.kenn.io/agentsview/internal/db"
@@ -189,6 +190,7 @@ func readLocalPushDependencyState(
 // only queried on the usageKnown=false fallback, which the push loop never
 // takes (it prefetches usage fingerprints for every candidate).
 func (st *localPushDependencyState) dependencyFingerprint(
+	ctx context.Context,
 	local *db.DB,
 	sessionID string,
 	usageEventFingerprint string,
@@ -213,7 +215,7 @@ func (st *localPushDependencyState) dependencyFingerprint(
 		msgFP.UsageEventFP = usageEventFingerprint
 	} else {
 		var err error
-		msgFP.UsageEventFP, err = local.UsageEventFingerprint(sessionID)
+		msgFP.UsageEventFP, err = localUsageEventPGFingerprint(ctx, local, sessionID)
 		if err != nil {
 			return "", fmt.Errorf(
 				"computing local usage event fingerprint: %w", err,
@@ -277,7 +279,7 @@ func localPushMessageFingerprint(ctx context.Context,
 		fp.UsageEventFP = usageEventFingerprint
 		return fp, nil
 	}
-	fp.UsageEventFP, err = local.UsageEventFingerprint(sessionID)
+	fp.UsageEventFP, err = localUsageEventPGFingerprint(ctx, local, sessionID)
 	if err != nil {
 		return fp, fmt.Errorf("computing local usage event fingerprint: %w", err)
 	}
@@ -775,7 +777,7 @@ func loadPushUsageEventFingerprints(
 	}
 	defer rows.Close()
 
-	builders := make(map[string]*strings.Builder, len(sessionIDs))
+	records := make(map[string][]string, len(sessionIDs))
 	for rows.Next() {
 		var sessionID string
 		var ordinal sql.NullInt64
@@ -795,17 +797,11 @@ func loadPushUsageEventFingerprints(
 		); err != nil {
 			return err
 		}
-		b := builders[sessionID]
-		if b == nil {
-			b = &strings.Builder{}
-			builders[sessionID] = b
-		}
 		occurred := ""
 		if occurredAt.Valid {
 			occurred = FormatISO8601(occurredAt.Time)
 		}
-		fmt.Fprintf(
-			b,
+		record := fmt.Sprintf(
 			"%t|%d|%d:%s|%d:%s|%d:%s|%d|%d|%d|%d|%d|%t|%d|%d:%s|%d:%s|%d:%s|%d:%s;",
 			ordinal.Valid,
 			ordinal.Int64,
@@ -824,12 +820,14 @@ func loadPushUsageEventFingerprints(
 			len(occurred), occurred,
 			len(dedupKey.String), dedupKey.String,
 		)
+		records[sessionID] = append(records[sessionID], record)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for sessionID, b := range builders {
-		out[sessionID] = b.String()
+	for sessionID, events := range records {
+		slices.Sort(events)
+		out[sessionID] = strings.Join(events, "")
 	}
 	return nil
 }
@@ -1002,4 +1000,22 @@ func shouldSkipSessionMessages(
 		localFP.ToolResultFP == comparisons.ToolResultFingerprint[sessionID] &&
 		localFP.TokenFP == comparisons.MessageTokenFingerprint[sessionID] &&
 		localFP.UsageEventFP == comparisons.UsageEventFingerprint[sessionID]
+}
+
+func localUsageEventPGFingerprint(ctx context.Context, local *db.DB, sessionID string) (string, error) {
+	fingerprints, err := local.UsageEventFingerprintsWithTimestampNormalizer(
+		ctx, []string{sessionID}, pgUsageEventTimestampFingerprintText,
+	)
+	if err != nil {
+		return "", err
+	}
+	return fingerprints[sessionID], nil
+}
+
+func pgUsageEventTimestampFingerprintText(value string) string {
+	normalized := pgPushTimestampFingerprintText(value)
+	if value != "" && normalized == "" {
+		return value
+	}
+	return normalized
 }
