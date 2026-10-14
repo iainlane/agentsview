@@ -1012,6 +1012,9 @@ func localUsageEventPGFingerprint(ctx context.Context, local *db.DB, sessionID s
 	return fingerprints[sessionID], nil
 }
 
+// pgUsageEventTimestampFingerprintText keeps malformed timestamps as written.
+// pgPushTimestampFingerprintText returns "" for them, which would match a NULL
+// timestamp in PostgreSQL and skip the push that reports the bad value.
 func pgUsageEventTimestampFingerprintText(value string) string {
 	normalized := pgPushTimestampFingerprintText(value)
 	if value != "" && normalized == "" {
