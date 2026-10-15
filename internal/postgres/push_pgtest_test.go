@@ -3631,7 +3631,7 @@ func TestPGPushMetadataChangesPreserveUnchangedUsage(t *testing.T) {
 		{name: "different offsets", timestamps: []string{
 			"2026-07-01T13:00:00+01:00", "2026-07-01T12:30:00Z",
 		}},
-		{name: "microsecond ties", timestamps: []string{
+		{name: "same microsecond", timestamps: []string{
 			"2026-07-01T12:00:00.123456900Z", "2026-07-01T12:00:00.123456100Z",
 		}},
 	} {

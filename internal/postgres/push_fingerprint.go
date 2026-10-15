@@ -756,6 +756,9 @@ func loadPushToolCallFingerprints(
 	return nil
 }
 
+// loadPushUsageEventFingerprints sorts each session's encoded records, so
+// the local side must come from db.SortedUsageEventFingerprints with
+// pgUsageEventTimestampFingerprintText.
 func loadPushUsageEventFingerprints(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -770,7 +773,6 @@ func loadPushUsageEventFingerprints(
 			occurred_at, dedup_key
 		 FROM usage_events
 		WHERE session_id = ANY($1)
-		ORDER BY session_id, occurred_at NULLS FIRST, id
 `, sessionIDs)
 	if err != nil {
 		return err
@@ -1003,7 +1005,7 @@ func shouldSkipSessionMessages(
 }
 
 func localUsageEventPGFingerprint(ctx context.Context, local *db.DB, sessionID string) (string, error) {
-	fingerprints, err := local.UsageEventFingerprintsWithTimestampNormalizer(
+	fingerprints, err := local.SortedUsageEventFingerprints(
 		ctx, []string{sessionID}, pgUsageEventTimestampFingerprintText,
 	)
 	if err != nil {

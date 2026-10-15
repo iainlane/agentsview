@@ -6250,7 +6250,7 @@ func TestGroupTopSessions(t *testing.T) {
 	}
 }
 
-func TestUsageEventFingerprintsWithTimestampNormalizer(t *testing.T) {
+func TestSortedUsageEventFingerprints(t *testing.T) {
 	record := func(inputTokens int, occurredAt string) string {
 		return fmt.Sprintf(
 			"false|0|7:session|5:model|0:|%d|0|0|0|0|false|0|0:|0:|%d:%s|0:;",
@@ -6261,11 +6261,11 @@ func TestUsageEventFingerprintsWithTimestampNormalizer(t *testing.T) {
 		return strings.Replace(value, ".000Z", "Z", 1)
 	}
 	tests := []struct {
-		name           string
-		events         []UsageEvent
-		normalize      func(string) string
-		wantRaw        string
-		wantNormalized string
+		name       string
+		events     []UsageEvent
+		normalize  func(string) string
+		wantRaw    string
+		wantSorted string
 	}{
 		{
 			name: "normalizes the comparison timestamp",
@@ -6275,8 +6275,8 @@ func TestUsageEventFingerprintsWithTimestampNormalizer(t *testing.T) {
 			normalize: func(string) string {
 				return "2026-07-01T12:00:00.123456Z"
 			},
-			wantRaw:        record(10, "2026-07-01T12:00:00.123456789Z"),
-			wantNormalized: record(10, "2026-07-01T12:00:00.123456Z"),
+			wantRaw:    record(10, "2026-07-01T12:00:00.123456789Z"),
+			wantSorted: record(10, "2026-07-01T12:00:00.123456Z"),
 		},
 		{
 			name: "sorts normalized records",
@@ -6289,9 +6289,20 @@ func TestUsageEventFingerprintsWithTimestampNormalizer(t *testing.T) {
 			wantRaw: record(5, "2026-07-01T12:00:00.000Z") +
 				record(20, "2026-07-01T12:00:00.5Z") +
 				record(10, "2026-07-01T12:00:00Z"),
-			wantNormalized: record(10, "2026-07-01T12:00:00Z") +
+			wantSorted: record(10, "2026-07-01T12:00:00Z") +
 				record(20, "2026-07-01T12:00:00.5Z") +
 				record(5, "2026-07-01T12:00:00Z"),
+		},
+		{
+			name: "sorts records without a normalizer",
+			events: []UsageEvent{
+				{InputTokens: 9, OccurredAt: "2026-07-01T12:00:00.1Z"},
+				{InputTokens: 1, OccurredAt: "2026-07-01T12:00:00.2Z"},
+			},
+			wantRaw: record(9, "2026-07-01T12:00:00.1Z") +
+				record(1, "2026-07-01T12:00:00.2Z"),
+			wantSorted: record(1, "2026-07-01T12:00:00.2Z") +
+				record(9, "2026-07-01T12:00:00.1Z"),
 		},
 	}
 	for _, tt := range tests {
@@ -6308,13 +6319,13 @@ func TestUsageEventFingerprintsWithTimestampNormalizer(t *testing.T) {
 			require.NoError(t, database.ReplaceSessionUsageEvents(ctx, id, tt.events))
 			ids := []string{id, "missing"}
 
-			normalized, err := database.UsageEventFingerprintsWithTimestampNormalizer(
+			sorted, err := database.SortedUsageEventFingerprints(
 				ctx, ids, tt.normalize,
 			)
 			require.NoError(t, err)
 			assert.Equal(t, map[string]string{
-				id: tt.wantNormalized, "missing": "",
-			}, normalized)
+				id: tt.wantSorted, "missing": "",
+			}, sorted)
 
 			raw, err := database.UsageEventFingerprints(ids)
 			require.NoError(t, err)

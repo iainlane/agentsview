@@ -1010,7 +1010,7 @@ func loadUsageSourceVersions(
 			foundIDs = append(foundIDs, id)
 		}
 	}
-	fingerprints, err := usageEventFingerprintsWithQuerier(ctx, tx, foundIDs, nil)
+	fingerprints, err := usageEventFingerprintsWithQuerier(ctx, tx, foundIDs, nil, false)
 	if err != nil {
 		return nil, err
 	}

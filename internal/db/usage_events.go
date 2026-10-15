@@ -187,26 +187,26 @@ func (db *DB) UsageEventFingerprints(
 	sessionIDs []string,
 ) (map[string]string, error) {
 	return usageEventFingerprintsWithQuerier(
-		context.Background(), db.getReader(), sessionIDs, nil,
+		context.Background(), db.getReader(), sessionIDs, nil, false,
 	)
 }
 
-// UsageEventFingerprintsWithTimestampNormalizer returns usage fingerprints
-// keyed by session ID after applying normalizeTimestamp to each occurred_at
-// value. The normalized timestamps no longer follow the stored text order, so
-// the encoded records are sorted.
-func (db *DB) UsageEventFingerprintsWithTimestampNormalizer(
+// SortedUsageEventFingerprints returns usage fingerprints keyed by session
+// ID after applying normalizeTimestamp to each occurred_at value. Normalized
+// timestamps no longer follow the stored text order, so the encoded records
+// are sorted and the fingerprint ignores row order.
+func (db *DB) SortedUsageEventFingerprints(
 	ctx context.Context, sessionIDs []string,
 	normalizeTimestamp func(string) string,
 ) (map[string]string, error) {
 	return usageEventFingerprintsWithQuerier(
-		ctx, db.getReader(), sessionIDs, normalizeTimestamp,
+		ctx, db.getReader(), sessionIDs, normalizeTimestamp, true,
 	)
 }
 
 func usageEventFingerprintsWithQuerier(
 	ctx context.Context, q messageRowsQuerier, sessionIDs []string,
-	normalizeTimestamp func(string) string,
+	normalizeTimestamp func(string) string, sorted bool,
 ) (map[string]string, error) {
 	out := make(map[string]string, len(sessionIDs))
 	if len(sessionIDs) == 0 {
@@ -220,7 +220,7 @@ func usageEventFingerprintsWithQuerier(
 	for start := 0; start < len(sessionIDs); start += batchSize {
 		end := min(start+batchSize, len(sessionIDs))
 		if err := appendUsageEventFingerprints(
-			ctx, q, out, sessionIDs[start:end], normalizeTimestamp,
+			ctx, q, out, sessionIDs[start:end], normalizeTimestamp, sorted,
 		); err != nil {
 			return nil, err
 		}
@@ -231,7 +231,7 @@ func usageEventFingerprintsWithQuerier(
 func appendUsageEventFingerprints(
 	ctx context.Context, q messageRowsQuerier,
 	out map[string]string, sessionIDs []string,
-	normalizeTimestamp func(string) string,
+	normalizeTimestamp func(string) string, sorted bool,
 ) error {
 	placeholders := make([]string, len(sessionIDs))
 	args := make([]any, len(sessionIDs))
@@ -314,7 +314,7 @@ func appendUsageEventFingerprints(
 		return err
 	}
 	for id, sessionRecords := range records {
-		if normalizeTimestamp != nil {
+		if sorted {
 			slices.Sort(sessionRecords)
 		}
 		out[id] += strings.Join(sessionRecords, "")
