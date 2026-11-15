@@ -536,9 +536,10 @@ func TestWatchBatchAccumulatorMergesAndSortsPublicWork(t *testing.T) {
 
 func TestWatchBatchAccumulatorReportsEntryAndBytePromotion(t *testing.T) {
 	tests := []struct {
-		name       string
-		add        func(*WatchBatchAccumulator)
-		wantReason WatchBatchPromotionReason
+		name        string
+		add         func(*WatchBatchAccumulator)
+		wantReason  WatchBatchPromotionReason
+		wantReasons WatchSyncReasons
 	}{
 		{
 			name: "entry limit",
@@ -549,7 +550,8 @@ func TestWatchBatchAccumulatorReportsEntryAndBytePromotion(t *testing.T) {
 				}
 				accumulator.Add(WatchBatch{Paths: paths})
 			},
-			wantReason: WatchBatchPromotionEntryLimit,
+			wantReason:  WatchBatchPromotionEntryLimit,
+			wantReasons: watchReasonPendingEntries,
 		},
 		{
 			name: "byte limit",
@@ -558,7 +560,8 @@ func TestWatchBatchAccumulatorReportsEntryAndBytePromotion(t *testing.T) {
 					"/sessions/" + strings.Repeat("a", defaultWatchBatchMaxPathBytes),
 				}})
 			},
-			wantReason: WatchBatchPromotionByteLimit,
+			wantReason:  WatchBatchPromotionByteLimit,
+			wantReasons: watchReasonPendingBytes,
 		},
 	}
 	for _, tt := range tests {
@@ -576,7 +579,7 @@ func TestWatchBatchAccumulatorReportsEntryAndBytePromotion(t *testing.T) {
 
 			batch, ok := accumulator.Take()
 			require.True(t, ok)
-			assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, batch)
+			assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: tt.wantReasons}, batch)
 			assert.Equal(t, []WatchBatchPromotionReason{tt.wantReason}, reasons)
 			assert.True(t, accumulator.Empty(),
 				"full sync must supersede later fine-grained work in the same accumulation window")
@@ -641,7 +644,7 @@ func TestPendingWatchBatchBoundsAllRetainedMetadata(t *testing.T) {
 
 	batch, ok := pending.Take()
 	require.True(t, ok)
-	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, batch,
+	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: watchReasonPendingEntries}, batch,
 		"overflow must discard every retained string")
 }
 
@@ -663,7 +666,7 @@ func TestPendingWatchBatchBoundsMixedMetadataBytesIndependently(t *testing.T) {
 
 	batch, ok := pending.Take()
 	require.True(t, ok)
-	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, batch,
+	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: watchReasonPendingBytes}, batch,
 		"byte overflow must discard every retained string")
 }
 
@@ -699,7 +702,7 @@ func TestPendingWatchBatchMetadataByteOverflowClearsStrings(t *testing.T) {
 
 	batch, ok := pending.Take()
 	require.True(t, ok)
-	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, batch)
+	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: watchReasonPendingBytes}, batch)
 }
 
 func TestPendingWatchBatchRootCountOverflowEmitsOnlyFullSync(t *testing.T) {
@@ -710,7 +713,7 @@ func TestPendingWatchBatchRootCountOverflowEmitsOnlyFullSync(t *testing.T) {
 
 	batch, ok := pending.Take()
 	require.True(t, ok)
-	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, batch)
+	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: watchReasonPendingEntries}, batch)
 }
 
 func TestWatchEventSinkCountsOnlyCapacityOverflowAsOverflow(t *testing.T) {
@@ -766,8 +769,8 @@ func TestWatchEventSinkRetainsConcurrentAuthoritativeLifecycleMarkers(t *testing
 	second := backendLifecycleToken{gate: secondGate, generation: 12}
 	sink := newWatchEventSink(2, 1024)
 
-	sink.RetainAuthoritative(first)
-	sink.RetainAuthoritative(second)
+	sink.RetainAuthoritative(first, 0)
+	sink.RetainAuthoritative(second, 0)
 	batch, ok := sink.Take(nil)
 
 	require.True(t, ok)
@@ -1424,6 +1427,7 @@ func TestWatcherRetriesFailedReconciliationMarker(t *testing.T) {
 	first := receiveWatchBatch(t, calls)
 	second := receiveWatchBatch(t, calls)
 	assert.Equal(t, []string{"/sessions"}, first.ReconcileRoots)
+	first.Reasons = watchReasonCallbackRetry
 	assert.Equal(t, first, second, "failed reconciliation must retain one retry marker")
 }
 
@@ -1957,7 +1961,7 @@ func TestWatcherDirectoryRenameErrorRetriesFullSync(t *testing.T) {
 	second := receiveWatchBatch(t, calls)
 	require.Len(t, first.Renames, 1)
 	assert.Equal(t, ItemIsDir, first.Renames[0].ItemType)
-	assert.Equal(t, WatchBatch{FullSync: true}, second)
+	assert.Equal(t, WatchBatch{FullSync: true, Reasons: watchReasonCallbackRetry | watchReasonAmbiguousRename}, second)
 }
 
 type retryScopedWatchError struct {
@@ -1994,7 +1998,7 @@ func TestWatcherPreservesLostEventsWhenFullRetryNarrowsToRoots(t *testing.T) {
 	first := receiveWatchBatch(t, calls)
 	second := receiveWatchBatch(t, calls)
 
-	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, first)
+	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: watchReasonBackendEventLoss}, first)
 	assert.Empty(t, second.Paths)
 	assert.Empty(t, second.Renames)
 	assert.Equal(t, []string{"/sessions"}, second.ReconcileRoots)
@@ -2043,12 +2047,12 @@ func TestWatcherPreservesLostEventsWhenAmbiguousRenameRetryPromotesToFullSync(t 
 		second := receiveWatchBatch(t, calls)
 		third := receiveWatchBatch(t, calls)
 
-		assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, first)
+		assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: watchReasonBackendEventLoss}, first)
 		require.Len(t, second.Renames, 1)
 		assert.Equal(t, ItemIsUnknown, second.Renames[0].ItemType)
 		assert.Equal(t, []string{"/sessions"}, second.ReconcileRoots)
 		assert.True(t, second.LostEvents)
-		assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, third)
+		assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: watchReasonBackendEventLoss | watchReasonCallbackRetry | watchReasonAmbiguousRename}, third)
 	})
 }
 
@@ -2096,7 +2100,7 @@ func TestWatcherUsesCallbackReconciliationScopeForRetry(t *testing.T) {
 			require.Len(t, first.Renames, 1)
 			assert.Equal(t, ItemIsUnknown, first.Renames[0].ItemType)
 			if tc.retry.FullSync {
-				assert.Equal(t, WatchBatch{FullSync: true}, second)
+				assert.Equal(t, WatchBatch{FullSync: true, Reasons: watchReasonCallbackRetry}, second)
 			} else {
 				assert.False(t, second.FullSync)
 				assert.Empty(t, second.Paths)
@@ -2149,7 +2153,7 @@ func TestRetainWatchRetryPathOverflowPromotesFullSync(t *testing.T) {
 	batch, ok := pending.Take()
 
 	require.True(t, ok)
-	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, batch,
+	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: watchReasonPendingEntries}, batch,
 		"retry paths use the normal bounded accumulator")
 }
 

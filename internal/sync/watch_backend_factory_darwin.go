@@ -1198,7 +1198,7 @@ func (b *darwinWatchBackend) beginFallbackReconciliation() {
 	if sink != nil {
 		sink.RetainAuthoritative(backendLifecycleToken{
 			gate: b, generation: generation,
-		})
+		}, watchReasonFallbackStarted|fallbackDiagnosticReasons(darwinFallbackReason(b.fallbackReason.Load())))
 	}
 }
 
@@ -1212,7 +1212,7 @@ func (b *darwinWatchBackend) openFallbackDispatch() {
 	if sink != nil && (b.fallbackEventsFull || len(b.fallbackEvents) > 0) {
 		sink.TryAccumulate(func(add func(backendEvent) bool) bool {
 			if b.fallbackEventsFull {
-				add(backendEvent{Op: backendOpFullSync})
+				add(backendEvent{Op: backendOpFullSync, Reasons: watchReasonFallbackBuffer})
 				return true
 			}
 			for event := range b.fallbackEvents {
@@ -1428,7 +1428,7 @@ func (b *darwinWatchBackend) beginNativeRecovery(now time.Time) error {
 		if b.sink != nil {
 			b.sink.RetainAuthoritative(backendLifecycleToken{
 				gate: b, generation: generation,
-			})
+			}, watchReasonNativeRecovery)
 		}
 		return nil
 	}
@@ -1483,7 +1483,7 @@ func (b *darwinWatchBackend) beginNativeRecovery(now time.Time) error {
 	if b.sink != nil {
 		b.sink.RetainAuthoritative(backendLifecycleToken{
 			gate: b, generation: generation,
-		})
+		}, watchReasonNativeRecovery)
 	}
 	return nil
 }
@@ -1617,6 +1617,23 @@ func appendWatchScopeRoots(scopes []PollingScope, watchScopes []WatchScope) []Po
 		return strings.Compare(a.Root, b.Root)
 	})
 	return scopes
+}
+
+func fallbackDiagnosticReasons(reason darwinFallbackReason) WatchSyncReasons {
+	switch reason {
+	case darwinFallbackStreamCreate:
+		return watchReasonStreamCreate
+	case darwinFallbackStreamStart:
+		return watchReasonStreamStart
+	case darwinFallbackNativeDrop:
+		return watchReasonNativeDrop
+	case darwinFallbackLifecycle:
+		return watchReasonRootLifecycle
+	case darwinFallbackKqueueStart:
+		return watchReasonKqueueStart
+	default:
+		return 0
+	}
 }
 
 func fallbackReasonLabel(reason darwinFallbackReason) string {

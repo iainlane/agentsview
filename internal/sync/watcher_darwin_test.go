@@ -157,7 +157,7 @@ func TestDarwinWatcherNativeSinkCollapsesBlockedConsumerOverflow(t *testing.T) {
 	}, first)
 	unblockConsumer()
 	second := requireReceiveWithin(t, batches, time.Second)
-	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true}, second)
+	assert.Equal(t, WatchBatch{FullSync: true, LostEvents: true, Reasons: watchReasonPendingBytes}, second)
 	assert.Never(t, func() bool { return len(batches) != 0 }, 100*time.Millisecond, 10*time.Millisecond)
 }
 
@@ -1691,7 +1691,10 @@ func TestDarwinWatcherFallbackRecoversNativeStreamsAndReleasesPolling(t *testing
 		Scopes: []PollingScope{{Agent: "agent-a", Root: root}},
 		Probe:  root,
 	}, requireReceiveWithin(t, polling, time.Second))
-	waitForDarwinBatch(t, batches, func(batch WatchBatch) bool { return batch.FullSync })
+	fallback := waitForDarwinBatch(t, batches, func(batch WatchBatch) bool { return batch.FullSync })
+	assert.Equal(t, watchReasonFallbackStarted|watchReasonNativeDrop, fallback.Reasons)
+	recovery := waitForDarwinBatch(t, batches, func(batch WatchBatch) bool { return batch.FullSync })
+	assert.Equal(t, watchReasonNativeRecovery, recovery.Reasons)
 	assert.Equal(t, darwinFallbackPollingObligationKey(root),
 		requireReceiveWithin(t, released, time.Second))
 	require.Eventually(t, func() bool {
@@ -2060,7 +2063,8 @@ func TestDarwinWatcherStartupStreamStartFailureFallsBack(t *testing.T) {
 	require.Equal(t, []RecursiveWatchResult{{Watched: 1}}, results)
 
 	watcher.Start()
-	waitForDarwinBatch(t, batches, func(batch WatchBatch) bool { return batch.FullSync })
+	fallback := waitForDarwinBatch(t, batches, func(batch WatchBatch) bool { return batch.FullSync })
+	assert.Equal(t, watchReasonFallbackStarted|watchReasonStreamStart, fallback.Reasons)
 	require.Eventually(t, func() bool {
 		return backend.fallbackPhaseValue() == darwinFallbackOpen
 	}, time.Second, time.Millisecond)
@@ -2390,7 +2394,8 @@ func TestDarwinWatcherKqueueStartFailureFallbackPollsBeforeInvalidation(t *testi
 	assert.Equal(t, []string{root, shallow}, requireReceiveWithin(t, coverage, time.Second))
 	requireReceiveWithin(t, invalidated, time.Second)
 	assert.True(t, requireReceiveWithin(t, invalidatedWithPolling, time.Second))
-	waitForDarwinBatch(t, batches, func(batch WatchBatch) bool { return batch.FullSync })
+	batch := waitForDarwinBatch(t, batches, func(batch WatchBatch) bool { return batch.FullSync })
+	assert.Equal(t, "fallback_started,shallow_start_failed", batch.Reasons.String())
 	require.Eventually(t, func() bool {
 		return backend.fallbackPhaseValue() == darwinFallbackOpen
 	}, time.Second, time.Millisecond)
@@ -2676,9 +2681,9 @@ func (s *stopAfterOneDirectSink) TryAccumulate(
 	return true
 }
 
-func (s *stopAfterOneDirectSink) RetainAuthoritative(token backendLifecycleToken) {
+func (s *stopAfterOneDirectSink) RetainAuthoritative(token backendLifecycleToken, reasons WatchSyncReasons) {
 	s.added++
-	s.event = backendEvent{Op: backendOpFullSync, Lifecycle: token}
+	s.event = backendEvent{Op: backendOpFullSync, Lifecycle: token, Reasons: reasons}
 	s.meaningful = true
 }
 
