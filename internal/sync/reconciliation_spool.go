@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -111,6 +112,7 @@ func (spool *reconciliationSpool) Count(ctx context.Context) (int, error) {
 type reconciliationSourceScope struct {
 	Provider parser.AgentType
 	Path     string
+	Subtree  bool
 }
 
 func (spool *reconciliationSpool) Candidate(
@@ -282,6 +284,7 @@ func (spool *reconciliationSpool) initialize(ctx context.Context) error {
 		CREATE TABLE non_authoritative_scopes (
 			provider TEXT NOT NULL,
 			path TEXT NOT NULL,
+			subtree INTEGER NOT NULL,
 			PRIMARY KEY (provider, path)
 		) WITHOUT ROWID;
 		BEGIN IMMEDIATE;
@@ -313,16 +316,16 @@ func (spool *reconciliationSpool) AddNonAuthoritativeScopes(
 		if scope.Provider == "" || scope.Path == "" {
 			continue
 		}
-		path := canonicalReconciliationSourceIdentity(
-			validatedProviderSourceStatPath(scope.Path),
-		)
-		if path == "" {
-			continue
+		path, err := reconciliationExclusionPath(ctx, scope.Path)
+		if err != nil {
+			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT OR IGNORE INTO non_authoritative_scopes(provider, path)
-			VALUES (?, ?)
-		`, string(scope.Provider), path); err != nil {
+			INSERT INTO non_authoritative_scopes(provider, path, subtree)
+			VALUES (?, ?, ?)
+			ON CONFLICT(provider, path) DO UPDATE
+			SET subtree = MAX(subtree, excluded.subtree)
+		`, string(scope.Provider), path, scope.Subtree); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
 			}
@@ -352,8 +355,25 @@ func (spool *reconciliationSpool) HasNonAuthoritativeScopes(
 func (spool *reconciliationSpool) ContainsNonAuthoritativeScope(
 	ctx context.Context, provider parser.AgentType, path string,
 ) (bool, error) {
-	path = canonicalReconciliationSourceIdentity(validatedProviderSourceStatPath(path))
-	return spool.queryNonAuthoritativeScope(ctx, provider, path, true)
+	physical, err := reconciliationExclusionPath(ctx, path)
+	if err != nil {
+		return false, err
+	}
+	return spool.queryNonAuthoritativeScope(ctx, provider, physical, true)
+}
+
+func reconciliationExclusionPath(ctx context.Context, path string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if isWindowsPath(path) {
+		return canonicalReconciliationPath(path), nil
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve reconciliation exclusion path %q: %w", path, err)
+	}
+	return canonicalReconciliationPath(absolute), nil
 }
 
 func (spool *reconciliationSpool) queryNonAuthoritativeScope(
@@ -373,6 +393,21 @@ func (spool *reconciliationSpool) queryNonAuthoritativeScope(
 			WHERE provider = ? AND path = ? LIMIT 1
 		`
 		args = append(args, path)
+		var parents []string
+		for current := path; ; {
+			parent := pathpkg.Dir(current)
+			if parent == current || parent == "." {
+				break
+			}
+			parents = append(parents, "?")
+			args = append(args, parent)
+			current = parent
+		}
+		if len(parents) > 0 {
+			query = `SELECT 1 FROM non_authoritative_scopes
+				WHERE provider = ? AND (path = ? OR
+				(subtree = 1 AND path IN (` + strings.Join(parents, ",") + `))) LIMIT 1`
+		}
 	}
 	var found int
 	err := spool.db.QueryRowContext(ctx, query, args...).Scan(&found)

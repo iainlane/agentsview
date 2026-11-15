@@ -70,6 +70,8 @@ type WatchBatch struct {
 	LostEvents      bool             `json:"lost_events,omitzero"`
 	Reasons         WatchSyncReasons `json:"reasons,omitzero" format:"int64" maximum:"4294967295"`
 	lifecycleTokens []backendLifecycleToken
+	// Cache invalidation can be reused only by the same engine; transport drops this proof.
+	preparedRecovery *Engine
 }
 
 type WatchCallback func(context.Context, WatchBatch) error
@@ -120,20 +122,21 @@ type WatchRetryError interface {
 // limit. Once either limit would be exceeded, individual paths are discarded
 // in favor of one full-sync marker until Take resets the accumulator.
 type pendingWatchBatch struct {
-	paths          map[string]struct{}
-	renames        map[WatchRename]struct{}
-	backendRenames map[pendingBackendRename]struct{}
-	roots          map[string]struct{}
-	strings        map[string]struct{}
-	lifecycle      map[backendLifecycleToken]struct{}
-	pathBytes      int
-	maxEntries     int
-	maxPathBytes   int
-	fullSync       bool
-	lostEvents     bool
-	reasons        WatchSyncReasons
-	immediate      bool // Keep control urgency with the batch it belongs to.
-	onOverflow     func(WatchBatchPromotionReason)
+	paths            map[string]struct{}
+	renames          map[WatchRename]struct{}
+	backendRenames   map[pendingBackendRename]struct{}
+	roots            map[string]struct{}
+	strings          map[string]struct{}
+	lifecycle        map[backendLifecycleToken]struct{}
+	pathBytes        int
+	maxEntries       int
+	maxPathBytes     int
+	fullSync         bool
+	lostEvents       bool
+	reasons          WatchSyncReasons
+	preparedRecovery *Engine
+	immediate        bool // Keep control urgency with the batch it belongs to.
+	onOverflow       func(WatchBatchPromotionReason)
 }
 
 type pendingBackendRename struct {
@@ -161,6 +164,7 @@ func (p *pendingWatchBatch) Empty() bool {
 }
 
 func (p *pendingWatchBatch) Add(path string) {
+	p.preparedRecovery = nil
 	if _, exists := p.paths[path]; exists {
 		return
 	}
@@ -191,6 +195,7 @@ func (p *pendingWatchBatch) AddCreatedSubtreePath(path, root string) bool {
 }
 
 func (p *pendingWatchBatch) AddRename(rename WatchRename) {
+	p.preparedRecovery = nil
 	if rename.Path == "" {
 		return
 	}
@@ -208,6 +213,7 @@ func (p *pendingWatchBatch) AddRename(rename WatchRename) {
 }
 
 func (p *pendingWatchBatch) AddReconcileRoot(root string) {
+	p.preparedRecovery = nil
 	if root == "" {
 		return
 	}
@@ -221,6 +227,7 @@ func (p *pendingWatchBatch) AddReconcileRoot(root string) {
 }
 
 func (p *pendingWatchBatch) AddBackendEvent(event backendEvent) bool {
+	p.preparedRecovery = nil
 	if event.Op == backendOpUnknown {
 		return !p.fullSync
 	}
@@ -293,6 +300,7 @@ func (p *pendingWatchBatch) AddFullSync() {
 // retainFullSync adds a retry marker without discarding newer fine-grained
 // work that arrived while the failed authoritative callback was running.
 func (p *pendingWatchBatch) retainFullSync() {
+	p.preparedRecovery = nil
 	p.fullSync = true
 }
 
@@ -303,6 +311,15 @@ func (p *pendingWatchBatch) merge(other *pendingWatchBatch) {
 	if other == nil {
 		return
 	}
+	prepared := other.preparedRecovery
+	if !p.Empty() && p.preparedRecovery != prepared {
+		prepared = nil
+	}
+	defer func() {
+		if !p.fullSync {
+			p.preparedRecovery = prepared
+		}
+	}()
 	p.immediate = p.immediate || other.immediate
 	p.reasons |= other.reasons
 	if other.fullSync {
@@ -387,6 +404,7 @@ func (p *pendingWatchBatch) overflow(reason WatchBatchPromotionReason) {
 }
 
 func (p *pendingWatchBatch) makeFullSync(lostEvents bool) {
+	p.preparedRecovery = nil
 	clear(p.paths)
 	clear(p.renames)
 	clear(p.backendRenames)
@@ -409,6 +427,7 @@ func (p *pendingWatchBatch) TakeWithRootAgents(
 	}
 	p.immediate = false
 	if p.fullSync {
+		p.preparedRecovery = nil
 		p.fullSync = false
 		lostEvents := p.lostEvents
 		p.lostEvents = false
@@ -479,9 +498,11 @@ func (p *pendingWatchBatch) TakeWithRootAgents(
 	p.pathBytes = 0
 	lostEvents := p.lostEvents
 	p.lostEvents = false
+	prepared := p.preparedRecovery
+	p.preparedRecovery = nil
 	return WatchBatch{
 		Paths: paths, Renames: renames, ReconcileRoots: roots,
-		LostEvents: lostEvents, Reasons: p.takeReasons(), lifecycleTokens: tokens,
+		LostEvents: lostEvents, Reasons: p.takeReasons(), lifecycleTokens: tokens, preparedRecovery: prepared,
 	}, true
 }
 
@@ -1580,12 +1601,16 @@ func callbackRetryBatch(err error) (WatchBatch, bool) {
 		Paths:          append([]string(nil), retry.Paths...),
 		ReconcileRoots: append([]string(nil), retry.ReconcileRoots...),
 		LostEvents:     retry.LostEvents,
-		Reasons:        retry.Reasons,
+		Reasons:        retry.Reasons, preparedRecovery: retry.preparedRecovery,
 	}, true
 }
 
 func retainWatchRetry(pending *pendingWatchBatch, retry WatchBatch) {
 	pending.reasons |= retry.Reasons
+	prepared := retry.preparedRecovery
+	if !pending.Empty() && pending.preparedRecovery != prepared {
+		prepared = nil
+	}
 	if retry.FullSync {
 		pending.retainFullSync()
 	} else {
@@ -1599,6 +1624,9 @@ func retainWatchRetry(pending *pendingWatchBatch, retry WatchBatch) {
 	pending.lostEvents = pending.lostEvents || retry.LostEvents
 	for _, token := range retry.lifecycleTokens {
 		pending.AddLifecycle(token)
+	}
+	if !pending.fullSync {
+		pending.preparedRecovery = prepared
 	}
 }
 

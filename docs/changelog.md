@@ -324,6 +324,14 @@ The latest release is
 
 **Bug fixes**
 
+- Junie session titles, projects, and working directories refresh during scoped
+  reconciliation even when an index-change notification was missed. Metadata
+  changes for other sessions remain pending for their next index event.
+- An inaccessible subtree no longer makes shared JSONL discovery repeatedly
+  process healthy sibling sessions when the provider supports scoped traversal.
+  Retries remain limited to unfinished paths, and archived sessions under a
+  broken symlink remain available until discovery can establish their source
+  state.
 - The all-history Usage page no longer fails with an internal error after
   upgrading a large archive while prices refresh.
 - Archives that use `archive_content = "transcripts"` no longer report retries
