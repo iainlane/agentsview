@@ -312,6 +312,12 @@ The latest release is
   as `homebrew`. Source builds send an empty value. See
   [Privacy and Telemetry](/docs/configuration/#privacy-and-telemetry).
 
+- Long-running syncs now report whether they are waiting for the engine lock
+  or processing sources. `debug.log` includes operation IDs, separate lock-wait
+  and running times, and a heartbeat every 30 seconds. Recovery source counts
+  accumulate across processing pages. The new records contain aggregate counts
+  without source paths or transcript contents.
+
 **Bug fixes**
 
 - The all-history Usage page no longer fails with an internal error after
