@@ -324,6 +324,12 @@ The latest release is
 
 **Bug fixes**
 
+- Daemon-backed PostgreSQL, ClickHouse and DuckDB push watchers no longer reject
+  change-triggered pushes when the client and daemon use different source roots.
+  Push watchers follow committed archive changes from the daemon without starting
+  a second filesystem watcher. Startup, periodic catch-up and shutdown still sync
+  sources through the archive owner.
+
 - Junie session titles, projects, and working directories refresh during scoped
   reconciliation even when an index-change notification was missed. Metadata
   changes for other sessions remain pending for their next index event.
