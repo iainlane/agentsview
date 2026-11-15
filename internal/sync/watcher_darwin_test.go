@@ -2395,7 +2395,7 @@ func TestDarwinWatcherKqueueStartFailureFallbackPollsBeforeInvalidation(t *testi
 	requireReceiveWithin(t, invalidated, time.Second)
 	assert.True(t, requireReceiveWithin(t, invalidatedWithPolling, time.Second))
 	batch := waitForDarwinBatch(t, batches, func(batch WatchBatch) bool { return batch.FullSync })
-	assert.Equal(t, "fallback_started,shallow_start_failed", batch.Reasons.String())
+	assert.Equal(t, "fallback_started,kqueue_start_failed", batch.Reasons.String())
 	require.Eventually(t, func() bool {
 		return backend.fallbackPhaseValue() == darwinFallbackOpen
 	}, time.Second, time.Millisecond)
